@@ -1,0 +1,6 @@
+{
+  "name": "RISExScan",
+  "description": "On-chain perpetuals explorer, smart-money leaderboard, ticker positioning analytics, and wallet profiler for RISEx on RISE Chain.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
