@@ -145,7 +145,7 @@ export function normalizeMarketSector(category?: string | null, baseSymbol?: str
 
 const SECTOR_META: Record<MarketSectorId, { label: string; shortLabel: string; group: 'PERP' | 'RWA' }> = {
   crypto: { label: 'Crypto Perps', shortLabel: 'CRYPTO', group: 'PERP' },
-  stocks: { label: 'US Equities', shortLabel: 'STOCK', group: 'RWA' },
+  stocks: { label: 'Equities', shortLabel: 'STOCK', group: 'RWA' },
   commodity: { label: 'Commodities', shortLabel: 'CMDTY', group: 'RWA' },
   index_etf: { label: 'Index ETFs', shortLabel: 'ETF', group: 'RWA' },
 };
