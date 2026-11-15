@@ -9,6 +9,23 @@ export interface PersistedMarketSnapshot {
   markPrice: number;
 }
 
+export interface CohortSnapshot {
+  marketId:string;
+  cohort:'whale'|'shark'|'dolphin'|'fish'|'shrimp';
+  observedAt:number;
+  longUsd:number;
+  shortUsd:number;
+  positions:number;
+}
+export interface PositionChange {
+  marketId:string;cohort:string;
+  fromTime:number;toTime:number;
+  previousNetUsd:number;currentNetUsd:number;
+  deltaNetUsd:number;
+  currentLongUsd:number;currentShortUsd:number;
+  positionCount:number;
+}
+
 export interface ObservedTradeRecord {
   marketId: string;
   tradeId: string;
@@ -79,6 +96,16 @@ export class HistoryStore {
           reported_fee_usd DOUBLE PRECISION,
           PRIMARY KEY(market_id,trade_id)
         );
+        CREATE TABLE IF NOT EXISTS risexscan_cohort_snapshots(
+          market_id TEXT NOT NULL,
+          cohort TEXT NOT NULL,
+          bucket_ms BIGINT NOT NULL,
+          long_usd DOUBLE PRECISION NOT NULL,
+          short_usd DOUBLE PRECISION NOT NULL,
+          position_count INTEGER NOT NULL,
+          PRIMARY KEY(market_id,cohort,bucket_ms)
+        );
+        CREATE INDEX IF NOT EXISTS risexscan_cohort_time ON risexscan_cohort_snapshots(bucket_ms);
         CREATE INDEX IF NOT EXISTS risexscan_trade_time ON risexscan_observed_trades(time_ms);
         CREATE INDEX IF NOT EXISTS risexscan_snapshot_time ON risexscan_market_snapshots(bucket_ms);
       `);
@@ -175,6 +202,56 @@ export class HistoryStore {
         ON CONFLICT DO NOTHING
       `,[chunk]);
     }
+  }
+
+  async recordCohortSnapshots(rows:CohortSnapshot[]):Promise<void>{
+    if(!this.ready || !this.pool || !rows.length)return;
+    const json=JSON.stringify(rows.map(x=>({
+      market_id:x.marketId,cohort:x.cohort,
+      bucket_ms:Math.floor(x.observedAt/3600000)*3600000,
+      long_usd:x.longUsd,short_usd:x.shortUsd,position_count:x.positions,
+    })));
+    await this.pool.query(`
+      INSERT INTO risexscan_cohort_snapshots(market_id,cohort,bucket_ms,long_usd,short_usd,position_count)
+      SELECT market_id,cohort,bucket_ms,long_usd,short_usd,position_count
+      FROM jsonb_to_recordset($1::jsonb) AS r(
+        market_id TEXT,cohort TEXT,bucket_ms BIGINT,long_usd DOUBLE PRECISION,
+        short_usd DOUBLE PRECISION,position_count INTEGER
+      )
+      ON CONFLICT(market_id,cohort,bucket_ms) DO UPDATE SET
+        long_usd=EXCLUDED.long_usd,short_usd=EXCLUDED.short_usd,position_count=EXCLUDED.position_count
+    `,[json]);
+  }
+
+  async getPositionChanges():Promise<{completeHistory:false;fromTime:number|null;toTime:number|null;changes:PositionChange[]}>{
+    const empty={completeHistory:false as const,fromTime:null,toTime:null,changes:[] as PositionChange[]};
+    if(!this.ready || !this.pool)return empty;
+    const hours=await this.pool.query(`
+      SELECT DISTINCT bucket_ms FROM risexscan_cohort_snapshots ORDER BY bucket_ms DESC LIMIT 2
+    `);
+    if(hours.rows.length<2)return {
+      ...empty,toTime:hours.rows[0] ? Number(hours.rows[0].bucket_ms) : null,
+    };
+    const toTime=Number(hours.rows[0].bucket_ms),fromTime=Number(hours.rows[1].bucket_ms);
+    const data=await this.pool.query(`
+      SELECT n.market_id,n.cohort,n.long_usd,n.short_usd,n.position_count,
+        COALESCE(p.long_usd,0) AS old_long,
+        COALESCE(p.short_usd,0) AS old_short
+      FROM risexscan_cohort_snapshots n
+      LEFT JOIN risexscan_cohort_snapshots p
+      ON p.market_id=n.market_id AND p.cohort=n.cohort AND p.bucket_ms=$1
+      WHERE n.bucket_ms=$2
+    `,[fromTime,toTime]);
+    const changes=data.rows.map(v=>({
+      marketId:v.market_id,cohort:v.cohort,fromTime,toTime,
+      previousNetUsd:Number(v.old_long)-Number(v.old_short),
+      currentNetUsd:Number(v.long_usd)-Number(v.short_usd),
+      deltaNetUsd:Number(v.long_usd)-Number(v.short_usd)-Number(v.old_long)+Number(v.old_short),
+      currentLongUsd:Number(v.long_usd),currentShortUsd:Number(v.short_usd),
+      positionCount:Number(v.position_count),
+    }));
+    changes.sort((a,b)=>Math.abs(b.deltaNetUsd)-Math.abs(a.deltaNetUsd));
+    return {completeHistory:false,fromTime,toTime,changes:changes.slice(0,60)};
   }
 
   async getHistoricalAnalytics():Promise<HistoricalAnalyticsPayload>{
