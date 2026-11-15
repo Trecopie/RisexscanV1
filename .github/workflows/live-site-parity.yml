@@ -24,7 +24,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
+          # Only bun.lock is committed; npm cache requires package-lock.json.
       - run: npm install --no-audit --no-fund
       - name: Read-only deployed API status and market parity
         run: npx tsx scripts/liveSiteParityAudit.ts
