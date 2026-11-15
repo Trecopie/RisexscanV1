@@ -1344,7 +1344,7 @@ export const OverviewPage: React.FC<{
       </section>
 
       {/* Split: Live Fills + Top PnL Traders */}
-      <section className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+      <section className="grid grid-cols-1 items-start gap-5 lg:grid-cols-12">
         {/* Live Fills */}
         <div className="sunrise-card rounded-2xl p-4 lg:col-span-6">
           <div className="mb-3 flex items-center justify-between">
