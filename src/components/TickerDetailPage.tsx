@@ -90,6 +90,7 @@ export const TickerDetailPage: React.FC<{
   const [bookResyncs, setBookResyncs] = useState(0);
   const [bookUpdatedAt, setBookUpdatedAt] = useState<number | null>(null);
   const [lastTradeReceivedAt, setLastTradeReceivedAt] = useState<number | null>(null);
+  const [tradeSocketConnected,setTradeSocketConnected] = useState(false);
   const [depthRows, setDepthRows] = useState(10);
   const bookLiveRef = React.useRef(false);
   const [loading, setLoading] = useState(true);
@@ -230,6 +231,7 @@ export const TickerDetailPage: React.FC<{
     bookLiveRef.current = false;
     setBookIsLive(false);
     setBookChecksumVerified(false);
+    setTradeSocketConnected(false);
 
     const flushBook = () => {
       bookUpdateTimer = null;
@@ -253,6 +255,8 @@ export const TickerDetailPage: React.FC<{
         const socket = new WebSocket('wss://ws.rise.trade/ws');
         ws = socket;
         socket.onopen = () => {
+          if (disposed || ws !== socket) return;
+          setTradeSocketConnected(true);
           // A reconnection can miss executions. Repair earlier OHLCV buckets
           // with REST immediately instead of awaiting the next reconciliation.
           if (hadConnected) setCandleSyncNonce(n=>n+1);
@@ -359,6 +363,7 @@ export const TickerDetailPage: React.FC<{
           if (disposed) return;
           setBookIsLive(false);
           setBookChecksumVerified(false);
+          setTradeSocketConnected(false);
           if (document.visibilityState === 'hidden') return;
           // Immediately fall back to a fresh REST book rather than displaying
           // the last received WS book throughout the reconnect backoff.
@@ -590,8 +595,9 @@ export const TickerDetailPage: React.FC<{
       <div className="flex flex-wrap items-center gap-x-5 gap-y-1 rounded-lg border border-slate-800/60 bg-[#080d18]/70 px-3 py-2 text-[10px] font-mono text-slate-400">
         <span>Last executed <strong className="text-[#e8edfb]">{lastExecutionPrice>0 ? formatPrice(lastExecutionPrice) : '—'}</strong></span>
         <span>{lastExecutionTime ? `Last fill ${new Date(lastExecutionTime).toLocaleTimeString()}` : 'Awaiting trade history'}</span>
-        <span className={lastTradeReceivedAt ? 'text-[#22e0a1]' : 'text-slate-500'}>
-          {lastTradeReceivedAt ? `Trade WS received ${new Date(lastTradeReceivedAt).toLocaleTimeString()}` : 'Trade WS awaiting first fill'}
+        <span className={tradeSocketConnected ? 'text-[#22e0a1]' : 'text-[#ffb02e]'}>
+          {tradeSocketConnected ? 'Trade WS connected' : 'Trade WS reconnecting'}
+          {lastTradeReceivedAt ? ` · last fill received ${new Date(lastTradeReceivedAt).toLocaleTimeString()}` : ' · awaiting first fill'}
         </span>
         <span>Chart candles = executed trades; mark = RISEx oracle. The two prices may differ.</span>
       </div>
@@ -629,7 +635,7 @@ export const TickerDetailPage: React.FC<{
                 bookTab === 'trades' ? 'bg-[#131c31] text-[#ffb02e]' : 'text-slate-400'
               }`}
             >
-              Recent Fills ({trades.length}) {lastTradeReceivedAt && <span title={new Date(lastTradeReceivedAt).toLocaleTimeString()} className="text-[#22e0a1]">●</span>}
+              Recent Fills ({trades.length}) <span className={tradeSocketConnected ? 'text-[#22e0a1]' : 'text-[#ffb02e]'} title={tradeSocketConnected ? 'Trade stream connected' : 'Trade stream reconnecting'}>●</span>
             </button>
           </div>
 
