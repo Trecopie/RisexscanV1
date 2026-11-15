@@ -17,7 +17,7 @@ test('bounded REST trade conversion stores decimal notional, IDs and only report
     maker_side:0,maker:'0x'+'1'.repeat(40),taker:'0x'+'2'.repeat(40),
     fee_maker:'0.012',fee_taker:'0.023',fee_liquidation:'0',
   },'4')!;
-  assert.ok(rec);assert.equal(rec.notionalUsd,5025.025);assert.equal(rec.feeUsd,0.035);
+  assert.ok(rec);assert.ok(Math.abs(rec.notionalUsd-5025.025)<1e-8);assert.ok(Math.abs((rec.feeUsd??0)-0.035)<1e-10);
   assert.equal(rec.makerSide,0);
   assert.equal(rec.maker,'0x'+'1'.repeat(40));
   assert.equal(normalizeObservedPublicTrade({...rec,time:'0'},'4'),null);
