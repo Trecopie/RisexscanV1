@@ -1,4 +1,9 @@
 name: Validate RISExScan
+
+# Public fork PRs must never receive write-scoped repository tokens.
+permissions:
+  contents: read
+
 on:
   pull_request:
   push:
