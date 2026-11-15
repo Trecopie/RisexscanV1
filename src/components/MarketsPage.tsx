@@ -23,6 +23,7 @@ export const MarketsPage: React.FC<{
   const { markets, loading, error, refreshSnapshot } = useMarketStream();
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('ALL');
+  const [includeInactive, setIncludeInactive] = useState(false);
   const [sortBy, setSortBy] = useState<MarketSortKey>('volume');
   const [sortDesc, setSortDesc] = useState(true);
 
@@ -36,8 +37,8 @@ export const MarketsPage: React.FC<{
 
   // The rows and summary cards always use the same filtered market subset.
   const filteredMarkets = useMemo(
-    () => filterDirectoryMarkets(markets, category, search),
-    [markets, category, search]
+    () => filterDirectoryMarkets(markets, category, search, includeInactive),
+    [markets, category, search, includeInactive]
   );
   const summary = useMemo(() => summarizeDirectoryMarkets(filteredMarkets), [filteredMarkets]);
   const activeHeading = CATEGORY_TITLES[category] || `${category.replaceAll('_', ' ')} Markets`;
@@ -116,6 +117,15 @@ export const MarketsPage: React.FC<{
             {cat}
           </button>
         ))}
+        <label className="ml-auto inline-flex items-center gap-2 text-[11px] font-mono text-slate-400 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={includeInactive}
+            onChange={(event) => setIncludeInactive(event.target.checked)}
+            className="accent-[#ffb02e]"
+          />
+          Include inactive
+        </label>
       </div>
 
       {error && markets.length === 0 && (
