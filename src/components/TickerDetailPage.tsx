@@ -67,8 +67,14 @@ export const TickerDetailPage: React.FC<{
   const { markets: streamedMarkets } = useMarketStream();
   const [analytics, setAnalytics] = useState<TickerAnalyticsResponse | null>(null);
   const [allMarkets, setAllMarkets] = useState<RisexMarket[]>([]);
-  const [candles, setCandles] = useState<MarketCandle[]>([]);
+  // Keep data attached to the market/resolution it actually belongs to.
+  // Changing timeframes must never briefly render 1H bars as 1m candles.
+  const [candleState,setCandleState] = useState<{marketId:string;resolution:string;rows:MarketCandle[]}>({
+    marketId:'',resolution:'',rows:[],
+  });
   const [resolution, setResolution] = useState('1H');
+  const candles = candleState.marketId === marketId && candleState.resolution === resolution
+    ? candleState.rows : [];
   const resolutionRef = React.useRef(resolution);
   resolutionRef.current = resolution;
   const [orderbook, setOrderbook] = useState<{ bids: OrderbookLevel[]; asks: OrderbookLevel[] }>({
@@ -143,7 +149,38 @@ export const TickerDetailPage: React.FC<{
     fetch(`/api/markets/${marketId}/candles?resolution=${resolution}`, { signal: controller.signal })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (!controller.signal.aborted && d?.candles) setCandles(d.candles);
+        if (!controller.signal.aborted && Array.isArray(d?.candles)) {
+          setCandleState((previous) => {
+            // Periodic REST reconciliation repairs missed WS candles, but a
+            // newer live last execution must not be overwritten by an older
+            // REST snapshot assembled before that trade arrived.
+            if (previous.marketId !== marketId || previous.resolution !== resolution || !previous.rows.length) {
+              return {marketId,resolution,rows:d.candles};
+            }
+            const rest=normalizeCandles(d.candles);
+            const live=normalizeCandles(previous.rows);
+            if (!rest.length)return previous;
+            const lastRestTime=rest[rest.length-1].time;
+            const latestRest=rest[rest.length-1];
+            const laterLive=live.filter(bar=>bar.time>=lastRestTime);
+            const merged=[...rest.filter(bar=>bar.time<lastRestTime)];
+            const sameLive=laterLive.find(bar=>bar.time===lastRestTime);
+            if(sameLive){
+              merged.push({
+                ...latestRest,
+                high:Math.max(latestRest.high,sameLive.high),
+                low:Math.min(latestRest.low,sameLive.low),
+                close:sameLive.close,
+                volume:Math.max(latestRest.volume,sameLive.volume),
+              });
+            }else merged.push(latestRest);
+            merged.push(...laterLive.filter(bar=>bar.time>lastRestTime));
+            return {marketId,resolution,rows:merged.map(bar=>({
+              time:bar.time*1000,open:bar.open,high:bar.high,
+              low:bar.low,close:bar.close,volume:bar.volume,
+            }))};
+          });
+        }
       })
       .catch(() => {});
   };
@@ -163,7 +200,16 @@ export const TickerDetailPage: React.FC<{
 
   useEffect(() => {
     loadCandles();
-    return () => candleAbortRef.current?.abort();
+    // A periodic authoritative candle reconciliation repairs missed executions
+    // during WS disconnects or RISEx feed catch-up, without relying on polling
+    // as the primary live chart source.
+    const timer=setInterval(()=>{
+      if(document.visibilityState==='visible')loadCandles();
+    },60000);
+    return () => {
+      candleAbortRef.current?.abort();
+      clearInterval(timer);
+    };
   }, [marketId, resolution]);
 
   // Live WS trades and L2 depth for only the selected ticker.
@@ -260,9 +306,9 @@ export const TickerDetailPage: React.FC<{
             if (fresh.length > 0) {
               setLastTradeReceivedAt(Date.now());
               setTrades((prev) => mergeExplorerTradeTape(fresh, prev, 80));
-              setCandles((prev) => {
-                if (prev.length === 0) return prev;
-                let bars = normalizeCandles(prev);
+              setCandleState((previous) => {
+                if (previous.marketId !== marketId || previous.resolution !== resolutionRef.current || !previous.rows.length) return previous;
+                let bars = normalizeCandles(previous.rows);
                 for (const tr of fresh) {
                   bars = mergeLiveTradeIntoBars(
                     bars,
@@ -274,14 +320,14 @@ export const TickerDetailPage: React.FC<{
                     resolutionRef.current
                   );
                 }
-                return bars.map((b) => ({
+                return {...previous,rows:bars.map((b) => ({
                   time: b.time * 1000,
                   open: b.open,
                   high: b.high,
                   low: b.low,
                   close: b.close,
                   volume: b.volume,
-                }));
+                }))};
               });
             }
           } catch {
