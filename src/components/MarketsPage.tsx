@@ -3,7 +3,8 @@ import { ArrowDownUp, BarChart3, Search } from 'lucide-react';
 import { useMarketStream } from '../context/MarketWebSocketContext';
 import type { MarketWithStats } from '../utils/marketWsPatch';
 import { calcMarketChangePct, formatPct, formatPrice, formatUsd } from '../utils/format';
-import { MarketMoveMeter } from './Charts';
+import { MarketMiniChart } from './MarketMiniChart';
+import { useMarketSparklines } from '../hooks/useMarketSparklines';
 import { TokenBadge } from './TraderAvatar';
 import { filterDirectoryMarkets, summarizeDirectoryMarkets } from '../utils/marketDirectory';
 
@@ -67,6 +68,12 @@ export const MarketsPage: React.FC<{
       return sortDesc ? diff : -diff;
     });
   }, [filteredMarkets, sortBy, sortDesc]);
+
+  const miniIds=useMemo(
+    ()=>filteredAndSorted.slice(0,30).map(m=>String(m.market_id)),
+    [filteredAndSorted]
+  );
+  const miniCharts=useMarketSparklines(miniIds);
 
   const toggleSort = (k: MarketSortKey) => {
     if (sortBy === k) setSortDesc((d) => !d);
@@ -246,7 +253,7 @@ export const MarketsPage: React.FC<{
                       </td>
                       <td className="py-3 px-2">
                         <div className="flex justify-center">
-                          <MarketMoveMeter changePct={chg} width={64} height={22} />
+                          <MarketMiniChart series={miniCharts[String(m.market_id)]} changePct={chg} width={64} height={22} />
                         </div>
                       </td>
                       <td className="py-3 px-2 text-right font-mono text-slate-200">
