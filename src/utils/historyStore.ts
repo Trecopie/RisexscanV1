@@ -151,7 +151,7 @@ export class HistoryStore {
     return count;
   }
 
-  async upsertTraders(rows:Array<{address:string}>):Promise<void> {
+  async upsertTraders<T extends {address:string}>(rows:T[]):Promise<void> {
     if(!this.ready || !this.pool || !rows.length)return;
     for(let start=0;start<rows.length;start+=250){
       await this.pool.query(`
