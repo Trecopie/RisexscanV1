@@ -107,4 +107,10 @@ test('buildCohortsAnalytics computes cohort bias, market divergence, and liquida
   // tiny_shrimp is only 3% away from liquidation ($103k vs $100k) -> present in liquidationRadar
   assert.equal(res.liquidationRadar.length, 1);
   assert.equal(res.liquidationRadar[0].cohort, 'shrimp');
+  // Latest market mark must override stale position mark for risk classification.
+  const changedMark = buildCohortsAnalytics(traders, [
+    { ...markets[0], mark_price: '97000' },
+  ], 1_700_000_000_000);
+  assert.equal(changedMark.liquidationRadar.length, 0); // 103k vs 97k >5%
+
 });
