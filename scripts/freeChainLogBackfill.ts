@@ -229,12 +229,15 @@ async function main():Promise<void>{
     if(!Number.isSafeInteger(tip)||tip<0)throw Error('Unverifiable chain tip');
     await initialize(pool);
     const stopAt=Date.now()+DEADLINE_MS;
+    let verifiedContracts=0;
+    let committedRanges=0;
     for(const item of CONTRACTS){
       if(Date.now()>=stopAt)break;
       const verified=await verifiedDeployment(item.role,item.address,config)
         .catch(err=>{console.warn(item.role+': deployment verification unavailable: '+
           String(err).slice(0,130));return null;});
       if(!verified)continue;
+      verifiedContracts++;
       let from=await nextStart(pool,item.address,verified.start,verified.creationHash);
       let scans=0,events=0;
       while(from<=tip&&scans<MAX_WINDOWS&&Date.now()<stopAt){
@@ -246,7 +249,7 @@ async function main():Promise<void>{
         const page=await readSafeRange(item.address,from,to);
         await commitRange(pool,item.address,verified.start,verified.creationHash,
           from,page.to,page.logs);
-        scans++;events+=page.logs.length;
+        scans++;committedRanges++;events+=page.logs.length;
         from=page.to+1;
         await delay(250);
       }
@@ -254,6 +257,20 @@ async function main():Promise<void>{
         ', committed '+scans+' exact ranges, '+events+' RAW events; next block '+from+
         ', finality-tip '+tip+'. Not yet full history.');
     }
+    if(verifiedContracts===0){
+      throw Error('No monitored contract verified. Check RISEx system/config, Blockscout creation_tx_hash and creation transaction; ZERO history scanned.');
+    }
+    // A fully scanned database can have no new ranges. For first-time setup,
+    // an empty checkpoint means nothing was indexed even if the Action ran green.
+    if(committedRanges===0){
+      const progress=await pool.query('SELECT COUNT(*)::integer AS count FROM risexscan_chain_scan_state WHERE chain_id=$1',[NETWORK_ID]);
+      if(!Number(progress.rows[0]?.count)){
+        throw Error('Contracts verified, but no historical block range was checkpointed. Check upstream RPC ranges and archive access.');
+      }
+    }
+    console.log('Verified contracts: '+verifiedContracts+
+      ', exact ranges committed this run: '+committedRanges+
+      '. Raw events are not decoded fills, PnL or complete venue coverage.');
   }finally{await pool.end();}
 }
 main().catch(err=>{
