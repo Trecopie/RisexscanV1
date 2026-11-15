@@ -906,6 +906,38 @@ async function captureCohortSnapshot():Promise<void> {
   }
 }
 
+// Merge newly discovered/enriched wallets written by the independent GitHub
+// backfill worker, without restarting the live website or replacing newer data.
+let backfillSyncCursorTime=new Date(Date.now()-15*60_000).toISOString();
+let backfillSyncCursorAddress='';
+let backfillSyncBusy=false;
+async function syncWalletBackfillUpdates():Promise<void>{
+  if(!historyStore.ready || backfillSyncBusy)return;
+  backfillSyncBusy=true;
+  try{
+    const page=await historyStore.loadWalletBackfillUpdates(
+      backfillSyncCursorTime,backfillSyncCursorAddress,1200
+    );
+    let changed=0;
+    for(const candidate of page.records){
+      if(!candidate?.address)continue;
+      const key=String(candidate.address).toLowerCase();
+      const existing=tradersMap.get(key);
+      const incomingUpdated=safeNum(candidate.lastUpdated);
+      const existingUpdated=safeNum(existing?.lastUpdated);
+      if(!existing || incomingUpdated>existingUpdated){
+        tradersMap.set(key,candidate as TraderRecord);
+        changed++;
+      }
+    }
+    backfillSyncCursorTime=page.cursorTime;
+    backfillSyncCursorAddress=page.cursorAddress;
+    if(changed)invalidateLeaderboardAndCohortCaches();
+  }catch(err){
+    console.error('Durable wallet backfill sync warning:',err);
+  }finally{backfillSyncBusy=false;}
+}
+
 async function runBackgroundIndexer() {
   if (isIndexing) return;
   isIndexing = true;
@@ -1445,6 +1477,8 @@ async function startServer() {
     });
   });
 
+  void syncWalletBackfillUpdates();
+  setInterval(() => { void syncWalletBackfillUpdates(); }, 120_000);
   void captureCohortSnapshot();
   setInterval(() => { void captureCohortSnapshot(); }, COHORT_CAPTURE_INTERVAL_MS);
   runBackgroundIndexer();
