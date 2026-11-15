@@ -35,6 +35,7 @@
 8. **Inactive markets in live totals:** Markets page now excludes `active === false` by default, with an explicit `Include inactive` control.
 9. **Avoidable UI work:** repeated identical oracle frames no longer replace React market arrays; hidden tabs pause shared WS subscriptions/reconnect work; Overview's slower REST bundle is refreshed every 30s, while WS price ticks remain independent.
 10. **Additional grounded analytics:** display category-aware advancing/declining market breadth with actual RISEx 24h changes and explicit WS versus REST provenance.
+11. **Live L2 depth:** subscribe the currently viewed ticker to RISEx's L2 WS snapshot/delta feed, not 20 unneeded global order books. Decode both price and quantity from the documented 18-decimal wei strings, including `quantity=0` level deletions. Coalesce depth UI updates to 120ms, use cached REST fallback when the ticker WS is down. **Book checksum validation and forced resync on gap/CRC mismatch remain production hardening tasks.**
 
 ## Source contracts and non-interchangeable measurements
 
