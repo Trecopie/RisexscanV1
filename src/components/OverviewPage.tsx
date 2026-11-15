@@ -310,7 +310,7 @@ export const OverviewPage: React.FC<{
   const [addWatchOpen, setAddWatchOpen] = useState(false);
   const [dashFilter, setDashFilter] = useState<DashboardSectorFilter>('all');
 
-  const { markets: wsMarkets, recentTrades: wsTrades } = useMarketStream();
+  const { markets: wsMarkets, recentTrades: wsTrades, connectionState } = useMarketStream();
   const loadControllerRef = React.useRef<AbortController | null>(null);
   const markets = useMemo(() => {
     if (wsMarkets.length > 0) return wsMarkets;
@@ -379,7 +379,7 @@ export const OverviewPage: React.FC<{
       if (document.visibilityState === 'visible') {
         loadOverviewBundle();
       }
-    }, 15000);
+    }, 30000);
     return () => {
       loadControllerRef.current?.abort();
       clearInterval(timer);
@@ -615,6 +615,24 @@ export const OverviewPage: React.FC<{
               <span className="text-[#e8edfb] font-semibold">{formatUsd(dashboardData.totalVolume24h, true)}</span> · OI{' '}
               <span className="text-[#ffb02e] font-semibold">{formatUsd(dashboardData.totalOpenInterestUsd, true)}</span>
             </div>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[10px] tabular-nums">
+              <span className="text-[#22e0a1]">{dashboardData.advancers} advancing</span>
+              <span className="text-[#ff4d6d]">{dashboardData.decliners} declining</span>
+              {dashboardData.unchanged > 0 && <span className="text-slate-400">{dashboardData.unchanged} unchanged</span>}
+              <span className="text-slate-600">·</span>
+              <span className={connectionState === 'connected' ? 'text-[#22e0a1]' : 'text-[#ffb02e]'}>
+                {connectionState === 'connected' ? 'Live oracle marks' : 'Prices reconnecting'}
+              </span>
+              <span className="text-slate-500">· 24h volume/OI via REST snapshots</span>
+            </div>
+            <div
+              className="flex h-1 max-w-[400px] overflow-hidden rounded-full bg-slate-800"
+              role="img"
+              aria-label={`Market breadth: ${dashboardData.advancers} advancing, ${dashboardData.decliners} declining, ${dashboardData.unchanged} unchanged`}
+            >
+              <div className="bg-[#22e0a1] transition-[width] duration-300" style={{ width: `${dashboardData.advancersPct}%` }} />
+              <div className="bg-[#ff4d6d] transition-[width] duration-300" style={{ width: `${dashboardData.marketCount > 0 ? dashboardData.decliners / dashboardData.marketCount * 100 : 0}%` }} />
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -732,6 +750,9 @@ export const OverviewPage: React.FC<{
             </div>
 
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+              {dashboardData.gainers.length === 0 && (
+                <div className="px-3 py-5 text-center text-xs text-slate-500">No markets advancing in this group.</div>
+              )}
               {dashboardData.gainers.map((entry, idx) => {
                 const up = entry.changePct >= 0;
                 return (
@@ -802,6 +823,9 @@ export const OverviewPage: React.FC<{
             </div>
 
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+              {dashboardData.losers.length === 0 && (
+                <div className="px-3 py-5 text-center text-xs text-slate-500">No markets declining in this group.</div>
+              )}
               {dashboardData.losers.map((entry, idx) => {
                 const up = entry.changePct >= 0;
                 return (
