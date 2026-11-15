@@ -348,8 +348,17 @@ export function applyWsBatchToMarkets<T extends RisexMarket>(
     ) {
       return m;
     }
+    const updated = applyMarketPricePatch(m, patch);
+    if (
+      updated.mark_price === m.mark_price &&
+      updated.index_price === m.index_price &&
+      updated.last_price === m.last_price &&
+      updated.change_24h === m.change_24h &&
+      updated.current_funding_rate === m.current_funding_rate &&
+      updated.funding_rate_8h === m.funding_rate_8h
+    ) return m;
     anyChanged = true;
-    return applyMarketPricePatch(m, patch);
+    return updated;
   });
 
   return {
