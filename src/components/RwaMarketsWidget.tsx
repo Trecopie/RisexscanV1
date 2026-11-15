@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Layers3 } from 'lucide-react';
 import type { RisexMarket } from '../types/risex';
 import { normalizeMarketSector, type MarketSectorId } from '../utils/overviewAnalytics';
@@ -18,20 +18,6 @@ export const RwaMarketsWidget: React.FC<{
   onSelectMarket: (id: string) => void;
 }> = ({ markets, onSelectMarket }) => {
   const [sector, setSector] = useState<Sector>('all');
-  const [protocolTvl, setProtocolTvl] = useState<number | null>(null);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch('/api/overview', { signal: controller.signal })
-      .then((response) => response.ok ? response.json() : null)
-      .then((data) => {
-        if (controller.signal.aborted) return;
-        const tvl = Number(data?.defiLlama?.protocolTvl);
-        if (Number.isFinite(tvl) && tvl > 0) setProtocolTvl(tvl);
-      })
-      .catch(() => {});
-    return () => controller.abort();
-  }, []);
   const rows = useMemo(() => markets.filter((m) => {
     const key = normalizeMarketSector(m.category, m.base_asset_symbol);
     return key !== 'crypto' && (sector === 'all' || key === sector);
@@ -49,7 +35,7 @@ export const RwaMarketsWidget: React.FC<{
           </div>
           <h2 className="mt-1 text-lg font-semibold text-[#e8edfb]">RWA Market Intelligence</h2>
           <p className="mt-1 text-xs text-slate-400">
-            Underlying-linked perpetual markets. Volume and open interest are derivative metrics, not tokenized asset TVL.
+            Equities, commodities and ETFs · live trading volume and open interest.
           </p>
         </div>
         <div className="flex flex-wrap gap-1">
@@ -60,12 +46,11 @@ export const RwaMarketsWidget: React.FC<{
           </button>)}
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-5 sm:px-5">
+      <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-3 sm:px-5">
         <div className="rounded-lg border border-slate-800 p-3"><div className="text-[10px] uppercase text-slate-500">RWA Markets</div><div className="mt-1 font-mono text-lg font-semibold">{rows.length}</div></div>
         <div className="rounded-lg border border-slate-800 p-3"><div className="text-[10px] uppercase text-slate-500">24h Volume</div><div className="mt-1 font-mono text-lg font-semibold">{formatUsd(volume, true)}</div></div>
         <div className="rounded-lg border border-slate-800 p-3"><div className="text-[10px] uppercase text-slate-500">Open Interest (USD)</div><div className="mt-1 font-mono text-lg font-semibold">{formatUsd(oi, true)}</div></div>
-        <div className="rounded-lg border border-slate-800 p-3"><div className="text-[10px] uppercase text-slate-500">RISEx Protocol TVL · DefiLlama</div><div className="mt-1 font-mono text-lg font-semibold">{protocolTvl === null ? '—' : formatUsd(protocolTvl, true)}</div></div>
-        <div className="rounded-lg border border-slate-800 p-3"><div className="text-[10px] uppercase text-slate-500">RWA Underlying TVL</div><div className="mt-1 font-mono text-lg font-semibold text-slate-400">Not reported</div></div>
+
       </div>
       <div className="overflow-x-auto border-t border-slate-800">
         <table className="w-full text-left text-xs">
@@ -92,9 +77,7 @@ export const RwaMarketsWidget: React.FC<{
           </tbody>
         </table>
       </div>
-      <p className="px-4 py-3 text-[11px] text-slate-500">
-        RISEx protocol TVL is verified via DefiLlama, but it is venue-wide, not RWA-specific or attributable to underlying real-world assets. Per-market RWA TVL is unavailable from the current sources.
-      </p>
+
     </section>
   );
 };
