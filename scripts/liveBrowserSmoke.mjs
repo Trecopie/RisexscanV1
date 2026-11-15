@@ -22,10 +22,6 @@ try{
   attach(desktop);
   await desktop.goto(url.origin,{waitUntil:'domcontentloaded',timeout:120000});
   await desktop.getByRole('heading',{name:'Historical Market Analytics'}).waitFor({timeout:30000});
-  await desktop.getByRole('heading',{name:'Market Heatmap'}).waitFor({timeout:30000});
-  await desktop.locator('.market-heat-tile').first().waitFor({timeout:30000});
-  const tiles=await desktop.locator('.market-heat-tile').count();
-  assert.ok(tiles>0&&tiles<=150,'Expected bounded active market heatmap');
   await desktop.screenshot({path:'artifacts/browser/overview-dark.png',fullPage:false});
 
   const light=desktop.getByRole('button',{name:'Switch to light mode'});
@@ -41,6 +37,14 @@ try{
   await desktop.getByRole('button',{name:'Markets',exact:true}).first().click();
   assert.ok(new URL(desktop.url()).searchParams.get('tab')==='markets',
     'Market navigation should update the shareable URL');
+  await desktop.getByRole('button',{name:'Heatmap',exact:true}).click();
+  await desktop.getByRole('heading',{name:'Market Heatmap'}).waitFor({timeout:30000});
+  await desktop.locator('.market-heat-tile').first().waitFor({timeout:30000});
+  const tiles=await desktop.locator('.market-heat-tile').count();
+  assert.ok(tiles>0&&tiles<=150,'Expected bounded live heatmap');
+  await desktop.screenshot({path:'artifacts/browser/markets-heatmap.png',fullPage:false});
+  await desktop.getByRole('button',{name:'Screener',exact:true}).click();
+  assert.ok(await desktop.getByRole('table').first().isVisible(),'Screener table restored');
   await desktop.getByRole('button',{name:'Leaderboard',exact:true}).first().click();
   assert.ok(new URL(desktop.url()).searchParams.get('tab')==='leaderboard',
     'Leaderboard navigation should update the shareable URL');
@@ -50,6 +54,8 @@ try{
     isMobile:true,hasTouch:true});
   attach(mobile);
   await mobile.goto(url.origin,{waitUntil:'domcontentloaded',timeout:120000});
+  await mobile.getByRole('button',{name:'Markets',exact:true}).first().click();
+  await mobile.getByRole('button',{name:'Heatmap',exact:true}).click();
   await mobile.getByRole('heading',{name:'Market Heatmap'}).waitFor({timeout:30000});
   const overflow=await mobile.evaluate(()=>({
     viewport:document.documentElement.clientWidth,
