@@ -56,7 +56,7 @@ test('PostgreSQL round trip: durable traders, state, unique trades, OI and cohor
       ]);
       const changes=await store.getPositionChanges();
       assert.equal(changes.mode,'changes');
-      assert.ok(changes.changes.some(v=>v.marketId===fakeId && v.cohort==='whale' && Math.abs(v.deltaNetUsd)<1e-9));
+      assert.ok(changes.changes.some(v=>v.marketId===fakeId && v.cohort==='whale' && v.deltaNetUsd!==null && Math.abs(v.deltaNetUsd)<1e-9));
       assert.ok(changes.changes.some(v=>v.marketId===fakeId && v.cohort==='shark' && v.deltaNetUsd===-25));
       // Verify the default free-tier budget cannot be bypassed by bulk fills.
       const previousLimit=process.env.RISEX_DB_SOFT_LIMIT_BYTES;
