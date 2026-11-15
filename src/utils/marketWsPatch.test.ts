@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   applyMarketPricePatch,
+  parseOracleWei,
   applyWsBatchToMarkets,
   parseWsMarketMessage,
   updateOrderbookAndGetMid,
@@ -174,4 +175,31 @@ test('applyWsBatchToMarkets batches updates and skips untouched arrays cleanly',
   assert.equal(res.markets[1].change_24h, '10');
   assert.equal(res.trades.length, 1);
   assert.equal(res.trades[0].market_name, 'BTC/USDC');
+});
+
+test('RISEx oracle frames decode 18-decimal mark/index prices without decimal trade confusion', () => {
+  assert.ok(Math.abs((parseOracleWei('63126084821834306372811') || 0) - 63126.08482183431) < 1e-8);
+  assert.equal(parseOracleWei('64000000000000000000000'), 64000);
+  assert.equal(parseOracleWei('64000'), 6.4e-14); // raw oracle strings are always wei
+  assert.equal(parseOracleWei('not-a-price'), undefined);
+  const parsed = parseWsMarketMessage({
+    channel: 'oracle', type: 'update', market_id: null,
+    data: { timestamp: 1786934140, prices: {
+      '1': { mark_price: '64000000000000000000000', index_price: '64010000000000000000000' },
+      '2': { mark_price: '2000000000000000000000' },
+    } },
+  });
+  assert.equal(parsed.length, 2);
+  const market = mkMarket({ mark_price: '63000', last_price: '63000', index_price: '63000', change_24h: '1000' });
+  const result = applyWsBatchToMarkets([market], new Map(), parsed);
+  assert.equal(result.markets[0].mark_price, '64000');
+  assert.equal(result.markets[0].index_price, '64010');
+  assert.equal(result.markets[0].change_24h, '2000');
+  const mixed = applyWsBatchToMarkets([market], new Map(), [
+    parsed[0],
+    { kind: 'trade', marketId: '1', price: 63990, size: 1,
+      trade: { id: 't', maker_side: 'buy', price: '63990', size: '1', time: '1786934140', block_number: '1', log_index: '1' } },
+  ]);
+  assert.equal(mixed.markets[0].mark_price, '64000');
+  assert.equal(mixed.markets[0].last_price, '63990');
 });

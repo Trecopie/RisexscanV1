@@ -31,6 +31,8 @@ import {
 import { mergeLiveTradeIntoBars, normalizeCandles } from '../utils/indicators';
 import { LongShortBiasBar } from './Charts';
 import { TradingViewChart } from './TradingViewChart';
+import { LiquidityDepthHeatmap } from './LiquidityDepthHeatmap';
+import { useMarketStream } from '../context/MarketWebSocketContext';
 import { calcLiqDistancePct, LiqDistanceBadge, TokenBadge, TraderAvatar } from './TraderAvatar';
 
 interface TickerAnalyticsResponse {
@@ -59,6 +61,7 @@ export const TickerDetailPage: React.FC<{
   onSelectWallet: (address: string) => void;
   onPeekTrader: (address: string) => void;
 }> = ({ marketId, onBack, onSelectMarket, onSelectWallet, onPeekTrader }) => {
+  const { markets: streamedMarkets } = useMarketStream();
   const [analytics, setAnalytics] = useState<TickerAnalyticsResponse | null>(null);
   const [allMarkets, setAllMarkets] = useState<RisexMarket[]>([]);
   const [candles, setCandles] = useState<MarketCandle[]>([]);
@@ -299,7 +302,9 @@ export const TickerDetailPage: React.FC<{
     }
   };
 
-  const market = analytics?.market;
+  // Shared oracle prices update each block while analytics supplies position snapshots.
+  const liveMarket = streamedMarkets.find((m) => String(m.market_id) === String(marketId));
+  const market = liveMarket || analytics?.market;
   const markPrice = Number(market?.mark_price || market?.last_price || 0);
   const chg24h = calcMarketChangePct(markPrice, market?.change_24h);
   const oiUsd = Number(market?.open_interest || 0) * markPrice;
@@ -514,6 +519,13 @@ export const TickerDetailPage: React.FC<{
           )}
         </div>
       </div>
+
+      <LiquidityDepthHeatmap
+        bids={orderbook.bids}
+        asks={orderbook.asks}
+        markPrice={markPrice}
+        baseSymbol={market?.base_asset_symbol}
+      />
 
       {/* Market Positioning Bias */}
       {analytics && (

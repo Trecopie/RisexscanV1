@@ -31,6 +31,13 @@ export interface ParsedWsOrderbookFrame {
   asks: { price: number; quantity: number }[];
 }
 
+export interface ParsedWsOracleFrame {
+  kind: 'oracle';
+  marketId: string;
+  markPrice?: number;
+  indexPrice?: number;
+}
+
 export interface ParsedWsFundingFrame {
   kind: 'funding';
   marketId: string;
@@ -41,11 +48,19 @@ export interface ParsedWsFundingFrame {
 export type ParsedWsMarketFrame =
   | ParsedWsTradeFrame
   | ParsedWsOrderbookFrame
-  | ParsedWsFundingFrame;
+  | ParsedWsFundingFrame
+  | ParsedWsOracleFrame;
 
 function toFinite(v: unknown): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+/** Oracle prices arrive as unsigned 18-decimal integer strings (not trade decimals). */
+export function parseOracleWei(raw: unknown): number | undefined {
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return undefined;
+  const price = Number(raw) / 1e18;
+  return Number.isFinite(price) && price > 0 ? price : undefined;
 }
 
 function parseBookLevels(raw: unknown): { price: number; quantity: number }[] {
@@ -75,6 +90,22 @@ export function parseWsMarketMessage(raw: unknown): ParsedWsMarketFrame[] {
   const channel = String(msg.channel || '').toLowerCase();
   const payload = msg.data;
   if (!payload) return [];
+
+  if (channel === 'oracle') {
+    const prices = payload.prices;
+    if (!prices || typeof prices !== 'object' || Array.isArray(prices)) return [];
+    const frames: ParsedWsOracleFrame[] = [];
+    for (const [marketId, entry] of Object.entries(prices)) {
+      if (!/^\d+$/.test(marketId) || !entry || typeof entry !== 'object') continue;
+      const price = entry as Record<string, unknown>;
+      const markPrice = parseOracleWei(price.mark_price);
+      const indexPrice = parseOracleWei(price.index_price);
+      if (markPrice !== undefined || indexPrice !== undefined) {
+        frames.push({ kind: 'oracle', marketId, markPrice, indexPrice });
+      }
+    }
+    return frames;
+  }
 
   if (channel === 'trades') {
     const items = Array.isArray(payload) ? payload : payload.trades || [payload];
@@ -195,6 +226,7 @@ export function applyMarketPricePatch<T extends RisexMarket>(
   market: T,
   opts: {
     markPrice?: number;
+    indexPrice?: number;
     lastPrice?: number;
     tradeVolumeUsd?: number;
     fundingRate?: number;
@@ -247,6 +279,8 @@ export function applyMarketPricePatch<T extends RisexMarket>(
   return {
     ...market,
     mark_price: nextMark > 0 ? String(nextMark) : market.mark_price,
+    index_price: opts.indexPrice !== undefined && Number.isFinite(opts.indexPrice) && opts.indexPrice > 0
+      ? String(opts.indexPrice) : market.index_price,
     last_price: nextLast > 0 ? String(nextLast) : market.last_price,
     change_24h: nextChange24h,
     high_24h: nextHigh,
@@ -274,6 +308,7 @@ export function applyWsBatchToMarkets<T extends RisexMarket>(
     string,
     {
       markPrice?: number;
+      indexPrice?: number;
       lastPrice?: number;
       tradeVolumeUsd: number;
       fundingRate?: number;
@@ -286,6 +321,10 @@ export function applyWsBatchToMarkets<T extends RisexMarket>(
     marketNameById.set(String(m.market_id), m.display_name || `MKT-${m.market_id}`);
   }
 
+  // The oracle is the authoritative mark/index source even if a trade or orderbook
+  // frame is seen later in the same render batch.
+  const oracleIds = new Set(frames.filter((f) => f.kind === 'oracle').map((f) => f.marketId));
+
   for (const frame of frames) {
     const id = frame.marketId;
     if (!marketNameById.has(id)) continue;
@@ -293,7 +332,7 @@ export function applyWsBatchToMarkets<T extends RisexMarket>(
     const cur = patches.get(id) || { tradeVolumeUsd: 0 };
     if (frame.kind === 'trade') {
       cur.lastPrice = frame.price;
-      cur.markPrice = frame.price;
+      if (!oracleIds.has(id)) cur.markPrice = frame.price;
       cur.tradeVolumeUsd += frame.price * frame.size;
       newTrades.push({
         ...frame.trade,
@@ -301,9 +340,12 @@ export function applyWsBatchToMarkets<T extends RisexMarket>(
       });
     } else if (frame.kind === 'orderbook') {
       const mid = updateOrderbookAndGetMid(bookCache, frame);
-      if (mid !== null) {
+      if (mid !== null && !oracleIds.has(id)) {
         cur.markPrice = mid;
       }
+    } else if (frame.kind === 'oracle') {
+      if (frame.markPrice !== undefined) cur.markPrice = frame.markPrice;
+      if (frame.indexPrice !== undefined) cur.indexPrice = frame.indexPrice;
     } else if (frame.kind === 'funding') {
       cur.fundingRate = frame.fundingRate;
       if (frame.fundingRate8h !== undefined) {
@@ -323,6 +365,7 @@ export function applyWsBatchToMarkets<T extends RisexMarket>(
     if (!patch) return m;
     if (
       patch.markPrice === undefined &&
+      patch.indexPrice === undefined &&
       patch.lastPrice === undefined &&
       patch.tradeVolumeUsd === 0 &&
       patch.fundingRate === undefined
