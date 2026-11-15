@@ -91,6 +91,8 @@ export interface ReconstructedClosedTrade {
   fees: number;
   funding: number;
   realizedPnl: number;
+  /** True only when official settlement events were attributed to this fully closed cycle. */
+  officialEventCount: number;
 }
 
 export function reconstructTradeLifecycles(
@@ -99,8 +101,10 @@ export function reconstructTradeLifecycles(
   realizedEvents: any[],
   marketsList: any[]
 ): {
-  openRealizedByMarket: Map<string, number>;
+  openRealizedByMarket: Map<string, number | null>;
+  openRealizedCompleteByMarket: Map<string, boolean>;
   closedTrades: ReconstructedClosedTrade[];
+  unattributedEventCount: number;
 } {
   const marketNameMap = new Map<string, string>();
   for (const m of marketsList) marketNameMap.set(String(m.market_id), m.display_name);
@@ -131,7 +135,9 @@ export function reconstructTradeLifecycles(
     fundingByMarket.get(mId)!.push({ ms: nsToMs(ev.timestamp), funding: f });
   }
 
-  const openRealizedByMarket = new Map<string, number>();
+  const openRealizedByMarket = new Map<string, number | null>();
+  const openRealizedCompleteByMarket = new Map<string, boolean>();
+  const openCycleBounds = new Map<string, { startMs: number; complete: boolean }>();
   const closedTrades: ReconstructedClosedTrade[] = [];
   const EPS = 1e-6;
 
@@ -176,7 +182,8 @@ export function reconstructTradeLifecycles(
 
     const finalizeCycle = (c: ReturnType<typeof makeCycle>, idx: number) => {
       if (c.isOpen) {
-        openRealizedByMarket.set(mId, c.realizedPnl);
+        // Reaching the zero-size opening fill proves the current lifecycle is complete.
+        openCycleBounds.set(mId, { startMs: nsToMs(c.openTime), complete: c.completeOpenFound });
         return;
       }
       if (!c.completeOpenFound || c.closeVol <= EPS || c.side === 'FLAT') return;
@@ -203,6 +210,7 @@ export function reconstructTradeLifecycles(
         fees: c.fees,
         funding: matchedFunding,
         realizedPnl: c.realizedPnl,
+        officialEventCount: 0,
       });
     };
 
@@ -211,7 +219,7 @@ export function reconstructTradeLifecycles(
       const sz = safeNum(t.size);
       if (sz <= 0) continue;
       const px = safeNum(t.price);
-      const sideStr = String(t.side || '').toUpperCase();
+      const sideStr = String(t.side ?? '').toUpperCase();
       const signedDelta = sideStr === 'BUY' || sideStr === '0' ? sz : -sz;
       const prevNet = net - signedDelta;
       const fillRpnl = safeNum(t.realized_pnl);
@@ -278,11 +286,69 @@ export function reconstructTradeLifecycles(
       }
     }
 
-    if (cur.isOpen) {
-      openRealizedByMarket.set(mId, cur.realizedPnl);
+    if (cur.isOpen && !openCycleBounds.has(mId)) {
+      openCycleBounds.set(mId, { startMs: nsToMs(cur.openTime), complete: false });
     }
   }
 
+  // Attribute each official realized settlement to exactly one verified 0→0
+  // lifecycle. Matching by market + timestamps prevents repeated partial closes
+  // being counted as separate finished trades. A timestamp shared by a
+  // position flip is assigned to the cycle that closes at that instant.
+  const cyclesByMarket = new Map<string, ReconstructedClosedTrade[]>();
+  for (const cycle of closedTrades) {
+    const group = cyclesByMarket.get(cycle.marketId) || [];
+    group.push(cycle);
+    cyclesByMarket.set(cycle.marketId, group);
+    // A missing realized event is not proof that the PnL was zero.
+    cycle.realizedPnl = 0;
+    cycle.funding = 0;
+  }
+  const openTotals = new Map<string, { pnl: number; events: number }>();
+  let unattributedEventCount = 0;
+  for (const event of realizedEvents || []) {
+    const marketId = String(event?.market_id ?? '');
+    const time = nsToMs(event?.timestamp);
+    if (!marketId || !Number.isFinite(time) || time <= 0) {
+      unattributedEventCount++;
+      continue;
+    }
+    const matches = (cyclesByMarket.get(marketId) || []).filter((cycle) => {
+      const opened = nsToMs(cycle.openTime);
+      const closed = nsToMs(cycle.closeTime);
+      return opened > 0 && closed >= opened && time >= opened - 1500 && time <= closed + 1500;
+    });
+    if (matches.length > 0) {
+      // If a flip opened another cycle at the same time, credit the earlier cycle.
+      matches.sort((a, b) =>
+        Math.abs(nsToMs(a.closeTime) - time) - Math.abs(nsToMs(b.closeTime) - time)
+      );
+      const cycle = matches[0];
+      cycle.realizedPnl += safeNum(event.pnl);
+      cycle.funding += safeNum(event.funding);
+      cycle.officialEventCount++;
+      continue;
+    }
+    const current = openCycleBounds.get(marketId);
+    if (current && current.startMs > 0 && time >= current.startMs - 1500) {
+      const prior = openTotals.get(marketId) || { pnl: 0, events: 0 };
+      prior.pnl += safeNum(event.pnl);
+      prior.events++;
+      openTotals.set(marketId, prior);
+    } else {
+      unattributedEventCount++;
+    }
+  }
+  for (const [mId] of openSignedMap) {
+    const bound = openCycleBounds.get(mId);
+    const matched = openTotals.get(mId);
+    const fullyObserved = Boolean(bound?.complete);
+    openRealizedCompleteByMarket.set(mId, fullyObserved);
+    // For truncated fills, show a partial observed sum only when there is
+    // evidence from official events. Never silently present unknown as zero.
+    openRealizedByMarket.set(mId, matched ? matched.pnl : fullyObserved ? 0 : null);
+  }
+
   closedTrades.sort((a, b) => nsToMs(b.closeTime) - nsToMs(a.closeTime));
-  return { openRealizedByMarket, closedTrades };
+  return { openRealizedByMarket, openRealizedCompleteByMarket, closedTrades, unattributedEventCount };
 }
