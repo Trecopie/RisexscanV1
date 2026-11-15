@@ -38,3 +38,18 @@ test('snapshot + delta + delete validate and detect corruption',()=>{
 test('invalid decimal formatted L2 frames are rejected instead of poisoning book',()=>{
   assert.equal(readRawOrderbookFrame({channel:'orderbook',type:'update',market_id:'1',data:{bids:[{price:'100.0',quantity:'2'}],asks:[]}}),null);
 });
+
+test('L2 snapshots can omit checksum but an update cannot claim verified depth without CRC32',()=>{
+  const book=emptyRawBook();
+  const snapshot=readRawOrderbookFrame({
+    channel:'orderbook',type:'snapshot',market_id:'1',
+    data:{market_id:1,bids:[{price:'100000000000000000000',quantity:'1000000000000000000'}],asks:[]},
+  })!;
+  applyRawBookFrame(book,snapshot);
+  assert.equal(rawBookIntegrityOk(book,snapshot),true);
+  const unchecksummed=readRawOrderbookFrame({
+    channel:'orderbook',type:'update',market_id:'1',
+    data:{market_id:1,bids:[],asks:[]},
+  })!;
+  assert.equal(rawBookIntegrityOk(book,unchecksummed),false);
+});
