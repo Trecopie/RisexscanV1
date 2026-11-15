@@ -107,7 +107,9 @@ export interface IndexedPositionRow {
   liquidationPrice: number;
   leverage: number;
   unrealizedPnl: number;
-  realizedPnl?: number;
+  realizedPnl?: number | null;
+  /** Whether the full opening-to-now fill history was observed for this active position. */
+  realizedPnlComplete?: boolean;
   roiPct: number;
   marginBalance: number;
   marginMode: 'Cross' | 'Isolated';
@@ -306,6 +308,7 @@ export interface ClosedTradeRecord {
   fees: number;
   funding: number;
   realizedPnl: number;
+  officialEventCount: number;
 }
 
 export interface WalletProfileData {
@@ -315,6 +318,9 @@ export interface WalletProfileData {
   positions: IndexedPositionRow[];
   closedTrades: ClosedTradeRecord[];
   tradesCapped?: boolean;
+  realizedEventsCapped?: boolean;
+  unverifiedCyclesCount?: number;
+  unattributedRealizedEvents?: number;
   header: PortfolioHeader | null;
   statsByPeriod: Record<string, PortfolioStats | null>;
   pnlChart: Record<string, ChartPoint[]>;
