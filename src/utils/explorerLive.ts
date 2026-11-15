@@ -29,8 +29,7 @@ export function deriveLiveLiquidationRisk(
 export function mergeExplorerTradeTape(socketTrades: MarketTrade[], restTrades: MarketTrade[], limit = 80): MarketTrade[] {
   const unique = new Map<string, MarketTrade>();
   for (const trade of [...socketTrades, ...restTrades]) {
-    const id = trade.id ||
-      `${trade.market_id || 'unknown'}:${trade.time}:${trade.price}:${trade.size}:${trade.log_index}`;
+    const id = `${trade.market_id || 'unknown'}:${trade.id || `${trade.time}:${trade.price}:${trade.size}:${trade.log_index}`}`;
     if (!unique.has(id)) unique.set(id, trade);
   }
   return [...unique.values()]
