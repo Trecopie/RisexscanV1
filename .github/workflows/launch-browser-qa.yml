@@ -1,6 +1,13 @@
 name: Launch browser QA - public RISExScan
 # Owner-triggered: real Chromium visual/smoke test of deployed site.
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'server.ts'
+      - 'scripts/liveBrowserSmoke.mjs'
+      - '.github/workflows/launch-browser-qa.yml'
   workflow_dispatch:
 
 permissions:
@@ -23,6 +30,8 @@ jobs:
         run: |
           npm install --no-save playwright@1.56.1 --no-audit --no-fund
           npx playwright install --with-deps chromium
+      - name: Allow Render Free production deployment to settle
+        run: sleep 85
       - name: Test live overview, heatmap, theme persistence, routes and mobile overflow
         run: node scripts/liveBrowserSmoke.mjs
       - name: Upload viewport screenshots for human review
