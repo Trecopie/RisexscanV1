@@ -135,9 +135,9 @@ test('computeTakerFlow & computeProfitabilitySummary compute accurate ratios', (
     { id: '1', maker_side: 'buy', price: '100', size: '3', time: '1', block_number: '1', log_index: '1' },
     { id: '2', maker_side: 'sell', price: '100', size: '1', time: '2', block_number: '1', log_index: '2' },
   ]);
-  assert.equal(flow.buyUsd, 300);
-  assert.equal(flow.sellUsd, 100);
-  assert.equal(flow.buySharePct, 75);
+  assert.equal(flow.buyUsd, 100); // maker SELL means taker BUY
+  assert.equal(flow.sellUsd, 300);
+  assert.equal(flow.buySharePct, 25);
 
   const prof = computeProfitabilitySummary([
     {
@@ -234,4 +234,30 @@ test('buildMarketDashboard filters by sector and ranks volume, gainers, and lose
   assert.equal(rwaOnly.topVolume[0].symbol, 'NVDA');
   assert.equal(rwaOnly.gainers[0].symbol, 'NVDA');
   assert.equal(rwaOnly.losers[0].symbol, 'XAU');
+});
+
+test('taker flow skips unknown maker sides instead of inventing sell-side volume', () => {
+  const result=computeTakerFlow([
+    {id:'a',maker_side:'0',price:'200',size:'1',time:'1',block_number:'',log_index:''},
+    {id:'b',maker_side:'1',price:'100',size:'1',time:'2',block_number:'',log_index:''},
+    {id:'c',maker_side:'unexpected',price:'1000000',size:'1',time:'3',block_number:'',log_index:''},
+  ]);
+  assert.equal(result.sellUsd,200);
+  assert.equal(result.buyUsd,100);
+  assert.equal(result.totalUsd,300);
+});
+
+test('gainer/loser ranking never labels a rising ticker a loser or a falling ticker a gainer', () => {
+  const allGreen=buildMarketDashboard([
+    mkMarket({market_id:'1',change_24h:'10',mark_price:'110'}),
+    mkMarket({market_id:'2',change_24h:'1',mark_price:'101'}),
+  ]);
+  assert.equal(allGreen.losers.length,0);
+  assert.equal(allGreen.gainers.length,2);
+  const allRed=buildMarketDashboard([
+    mkMarket({market_id:'1',change_24h:'-10',mark_price:'90'}),
+    mkMarket({market_id:'2',change_24h:'-1',mark_price:'99'}),
+  ]);
+  assert.equal(allRed.gainers.length,0);
+  assert.equal(allRed.losers.length,2);
 });
