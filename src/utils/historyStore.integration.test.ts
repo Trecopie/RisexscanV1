@@ -38,12 +38,24 @@ test('PostgreSQL round trip: durable traders, state, unique trades, OI and cohor
       assert.ok(history.dailyTrades.some(day=>day.volumeUsd>=105));
       assert.ok(history.oiSnapshots.some(s=>s.marketCount>=1 && s.openInterestUsd>=222));
 
+      // A single bucket must expose present exposure, not a fabricated zero-based change.
       await store.recordCohortSnapshots([
         {marketId:fakeId,cohort:'whale',observedAt:hour-3600000,longUsd:100,shortUsd:10,positions:2},
+      ]);
+      const initialPositions=await store.getPositionChanges();
+      assert.equal(initialPositions.mode,'current');
+      assert.equal(initialPositions.fromTime,null);
+      assert.ok(initialPositions.changes.some(v=>
+        v.marketId===fakeId && v.cohort==='whale' &&
+        v.currentNetUsd===90 && v.deltaNetUsd===null && v.previousNetUsd===null
+      ));
+
+      await store.recordCohortSnapshots([
         {marketId:fakeId,cohort:'whale',observedAt:hour,longUsd:120,shortUsd:30,positions:2},
         {marketId:fakeId,cohort:'shark',observedAt:hour-3600000,longUsd:25,shortUsd:0,positions:1},
       ]);
       const changes=await store.getPositionChanges();
+      assert.equal(changes.mode,'changes');
       assert.ok(changes.changes.some(v=>v.marketId===fakeId && v.cohort==='whale' && Math.abs(v.deltaNetUsd)<1e-9));
       assert.ok(changes.changes.some(v=>v.marketId===fakeId && v.cohort==='shark' && v.deltaNetUsd===-25));
       // Verify the default free-tier budget cannot be bypassed by bulk fills.
