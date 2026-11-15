@@ -201,6 +201,8 @@ export class HistoryStore {
         SELECT lower(record.address),record.value
         FROM jsonb_to_recordset($1::jsonb) AS record(address TEXT, value JSONB)
         ON CONFLICT(address) DO UPDATE SET payload=EXCLUDED.payload,updated_at=now()
+        WHERE COALESCE((EXCLUDED.payload->>'lastUpdated')::bigint,0)
+          >= COALESCE((risexscan_traders.payload->>'lastUpdated')::bigint,0)
       `,[JSON.stringify(rows.slice(start,start+250).map((v)=>({address:v.address,value:v})))]);
     }
   }
