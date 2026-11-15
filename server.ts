@@ -1816,6 +1816,38 @@ async function startServer() {
     }
   });
 
+  // Real 24h OHLCV-based mini charts, requested in batches to avoid 18+
+  // client fetches. Never synthesize sine-wave price series from % change.
+  app.get('/api/markets/sparklines', async (req:Request,res:Response) => {
+    const ids=String(req.query.ids||'').split(',').map(v=>v.trim())
+      .filter(v=>/^\d{1,6}$/.test(v)).slice(0,30);
+    const unique=[...new Set(ids)];
+    if (!unique.length) {res.json({series:{},fetchedAt:Date.now()});return;}
+    const now=Date.now();
+    const toNs=(BigInt(now)*1000000n).toString();
+    const fromNs=(BigInt(now-40*3600000)*1000000n).toString();
+    const series:Record<string,{points:number[];lastCandleAt:number|null}>={};
+    for(let offset=0;offset<unique.length;offset+=6){
+      const batch=await Promise.allSettled(unique.slice(offset,offset+6).map(async (id)=>{
+        const result=await cachedCall(`sparkline:${id}`,300000,async()=>{
+          const tv=await fetchJson(`${RISEX_API}/v1/markets/id/${id}/trading-view-data?interval=3600000000000&from=${fromNs}&to=${toNs}`,{},9000,0);
+          const values=(tv?.data?.data||[]).map((c:any)=>({
+            time:nsToMs(c.time),
+            value:safeNum(c.close),
+          })).filter((p:{time:number;value:number}) => p.time > now-86400000 && p.time <= now+300000 && p.value>0)
+            .sort((a:{time:number},b:{time:number})=>a.time-b.time);
+          return {
+            points:values.slice(-30).map((p:{value:number})=>p.value),
+            lastCandleAt:values[values.length-1]?.time||null,
+          };
+        });
+        return [id,result] as const;
+      }));
+      for(const result of batch) if(result.status==='fulfilled')series[result.value[0]]=result.value[1];
+    }
+    res.json({series,fetchedAt:Date.now(),source:'RISEx 1H OHLCV'});
+  });
+
   // 8. Orderbook (2s cached)
   app.get('/api/markets/:marketId/orderbook', async (req: Request, res: Response) => {
     try {
