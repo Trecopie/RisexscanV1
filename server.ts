@@ -2109,6 +2109,7 @@ async function startServer() {
           },
         };
       });
+      res.setHeader('Cache-Control', 'no-store');
       res.json(payload);
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to load explorer data' });
