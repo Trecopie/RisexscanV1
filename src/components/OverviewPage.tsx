@@ -45,7 +45,7 @@ import {
   type DashboardSectorFilter,
 } from '../utils/overviewAnalytics';
 import type { NavTab } from './Navbar';
-import { MiniSparkline } from './Charts';
+import { MarketMoveMeter } from './Charts';
 import { RisexSymbol } from './RisexSymbol';
 import { TokenBadge, TraderAvatar } from './TraderAvatar';
 import { useMarketStream } from '../context/MarketWebSocketContext';
@@ -688,7 +688,7 @@ export const OverviewPage: React.FC<{
                         </span>
                         <span className="font-mono text-[9px] text-slate-500">#{idx + 1}</span>
                       </div>
-                      <MiniSparkline seed={entry.displayName} changePct={entry.changePct} width={36} height={14} />
+                      <MarketMoveMeter changePct={entry.changePct} width={36} height={14} />
                     </div>
 
                     <div className="flex items-end justify-between gap-1.5 w-full">
@@ -753,7 +753,7 @@ export const OverviewPage: React.FC<{
                         </span>
                         <span className="font-mono text-[9px] text-slate-500">#{idx + 1}</span>
                       </div>
-                      <MiniSparkline seed={entry.displayName} changePct={entry.changePct} width={36} height={14} />
+                      <MarketMoveMeter changePct={entry.changePct} width={36} height={14} />
                     </div>
 
                     <div className="flex items-end justify-between gap-1.5 w-full">
@@ -823,7 +823,7 @@ export const OverviewPage: React.FC<{
                         </span>
                         <span className="font-mono text-[9px] text-slate-500">#{idx + 1}</span>
                       </div>
-                      <MiniSparkline seed={entry.displayName} changePct={entry.changePct} width={36} height={14} />
+                      <MarketMoveMeter changePct={entry.changePct} width={36} height={14} />
                     </div>
 
                     <div className="flex items-end justify-between gap-1.5 w-full">
@@ -1295,7 +1295,7 @@ export const OverviewPage: React.FC<{
                       {formatPct(chg)}
                     </div>
                   </div>
-                  <MiniSparkline seed={m.display_name} changePct={chg} />
+                  <MarketMoveMeter changePct={chg} />
                 </div>
               </div>
             );
