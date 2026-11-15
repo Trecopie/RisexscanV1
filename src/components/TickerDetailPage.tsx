@@ -108,7 +108,7 @@ export const TickerDetailPage: React.FC<{
     try {
       const [anRes, obRes, trRes, fnRes] = await Promise.allSettled([
         safeJson(`/api/ticker/${marketId}/analytics`),
-        safeJson(`/api/markets/${marketId}/orderbook`),
+        bookLiveRef.current ? Promise.resolve(null) : safeJson(`/api/markets/${marketId}/orderbook`),
         safeJson(`/api/markets/${marketId}/trades?limit=60`),
         safeJson(`/api/markets/${marketId}/funding`),
       ]);
@@ -186,13 +186,14 @@ export const TickerDetailPage: React.FC<{
       if (disposed || document.visibilityState === 'hidden') return;
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
       try {
-        ws = new WebSocket('wss://ws.rise.trade/ws');
-        ws.onopen = () => {
+        const socket = new WebSocket('wss://ws.rise.trade/ws');
+        ws = socket;
+        socket.onopen = () => {
           attempt = 0;
-          ws?.send(JSON.stringify({method:'subscribe',params:{channel:'trades',market_ids:[Number(marketId)]}}));
-          ws?.send(JSON.stringify({method:'subscribe',params:{channel:'orderbook',market_ids:[Number(marketId)]}}));
+          socket.send(JSON.stringify({method:'subscribe',params:{channel:'trades',market_ids:[Number(marketId)]}}));
+          socket.send(JSON.stringify({method:'subscribe',params:{channel:'orderbook',market_ids:[Number(marketId)]}}));
         };
-        ws.onmessage = (ev) => {
+        socket.onmessage = (ev) => {
           if (disposed || document.visibilityState === 'hidden') return;
           try {
             // Share the same validated RISEx WS decoder as the market-wide feed.
@@ -241,7 +242,8 @@ export const TickerDetailPage: React.FC<{
             // ignore
           }
         };
-        ws.onclose = () => {
+        socket.onclose = () => {
+          if (ws !== socket) return;
           ws = null;
           bookLiveRef.current = false;
           if (disposed) return;
@@ -250,8 +252,8 @@ export const TickerDetailPage: React.FC<{
           const delay = Math.min(30000, 1500 * Math.pow(2, attempt++));
           reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
         };
-        ws.onerror = () => {
-          ws?.close();
+        socket.onerror = () => {
+          socket.close();
         };
       } catch {
         if (!disposed) {
