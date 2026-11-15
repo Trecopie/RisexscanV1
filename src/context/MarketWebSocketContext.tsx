@@ -128,11 +128,11 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
     if (subscribedKeyRef.current === key) return;
     subscribedKeyRef.current = key;
 
-    const topBookIds = allIds.slice(0, 20);
+    // Subscribe only to data the global UI consumes. L2 depth is handled by
+    // the currently opened ticker detail, avoiding 20 unused orderbook streams.
     ws.send(JSON.stringify({ method: 'subscribe', params: { channel: 'oracle' } }));
     ws.send(JSON.stringify({ method: 'subscribe', params: { channel: 'trades', market_ids: allIds } }));
     ws.send(JSON.stringify({ method: 'subscribe', params: { channel: 'funding', market_ids: allIds } }));
-    ws.send(JSON.stringify({ method: 'subscribe', params: { channel: 'orderbook', market_ids: topBookIds } }));
   }, []);
 
   const refreshSnapshot = useCallback(async () => {
