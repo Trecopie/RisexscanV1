@@ -332,7 +332,16 @@ async function restoreIndexAtStartup():Promise<void>{
         if (trader?.address) tradersMap.set(trader.address.toLowerCase(),trader as TraderRecord);
       }
     });
-    console.log(`Restored ${count} traders from persistent PostgreSQL index`);
+    // First DB-enabled deployment may have an existing local checkpoint. Import
+    // it once rather than throwing away a previously discovered wallet universe.
+    if (count === 0 && fs.existsSync(CACHE_FILE)) {
+      loadDiskCache();
+      for (const key of tradersMap.keys()) changedTraders.add(key);
+      saveDiskCache();
+      console.log(`Importing ${tradersMap.size} historical wallet records into PostgreSQL`);
+    } else {
+      console.log(`Restored ${count} traders from persistent PostgreSQL index`);
+    }
   } catch(err) {
     console.error('Postgres restore failed; using local fallback:',err);
     loadDiskCache();
@@ -1195,9 +1204,22 @@ function startObservedTradeCollector() {
               buffer.shift();
               droppedTradeEvents++;
             }
+            const maker=String(item?.maker||'');
+            const taker=String(item?.taker||'');
+            const makerSide=Number(item?.maker_side);
+            if (/^0x[a-fA-F0-9]{40}$/.test(maker)) {
+              seedDiscoveredTrader(maker,{source:'live-trade-maker'});
+            }
+            if (/^0x[a-fA-F0-9]{40}$/.test(taker)) {
+              seedDiscoveredTrader(taker,{source:'live-trade-taker'});
+            }
             buffer.push({
               marketId,tradeId:id,timestampMs,
               notionalUsd:price*size,feeUsd:reportedFee,
+              maker:/^0x[a-fA-F0-9]{40}$/.test(maker)?maker.toLowerCase():null,
+              taker:/^0x[a-fA-F0-9]{40}$/.test(taker)?taker.toLowerCase():null,
+              makerSide:Number.isInteger(makerSide) && (makerSide===0||makerSide===1)?makerSide:null,
+              price:String(item.price),size:String(item.size),
             });
             lastObservedTradeAt=Date.now();
           }
