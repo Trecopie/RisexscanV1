@@ -234,13 +234,16 @@ export class HistoryStore {
     };
     const toTime=Number(hours.rows[0].bucket_ms),fromTime=Number(hours.rows[1].bucket_ms);
     const data=await this.pool.query(`
-      SELECT n.market_id,n.cohort,n.long_usd,n.short_usd,n.position_count,
+      SELECT COALESCE(n.market_id,p.market_id) AS market_id,
+        COALESCE(n.cohort,p.cohort) AS cohort,
+        COALESCE(n.long_usd,0) AS long_usd,
+        COALESCE(n.short_usd,0) AS short_usd,
+        COALESCE(n.position_count,0) AS position_count,
         COALESCE(p.long_usd,0) AS old_long,
         COALESCE(p.short_usd,0) AS old_short
-      FROM risexscan_cohort_snapshots n
-      LEFT JOIN risexscan_cohort_snapshots p
-      ON p.market_id=n.market_id AND p.cohort=n.cohort AND p.bucket_ms=$1
-      WHERE n.bucket_ms=$2
+      FROM (SELECT * FROM risexscan_cohort_snapshots WHERE bucket_ms=$2) n
+      FULL OUTER JOIN (SELECT * FROM risexscan_cohort_snapshots WHERE bucket_ms=$1) p
+      ON p.market_id=n.market_id AND p.cohort=n.cohort
     `,[fromTime,toTime]);
     const changes=data.rows.map(v=>({
       marketId:v.market_id,cohort:v.cohort,fromTime,toTime,
