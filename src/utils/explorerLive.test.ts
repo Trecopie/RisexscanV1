@@ -34,4 +34,9 @@ test('Explorer trade tape deduplicates WS and REST updates and sorts by timestam
   const mk=(id:string,time:string):MarketTrade=>({id,market_id:'1',time,price:'100',size:'1',maker_side:'buy',block_number:'42',log_index:'0'});
   const merged=mergeExplorerTradeTape([mk('b','1700000002000000000'),mk('a','1700000001000000000')],[mk('a','1700000001000000000'),mk('c','1700000000000000000')]);
   assert.deepEqual(merged.map(x=>x.id),['b','a','c']);
+  const sameIdDifferentMarkets = mergeExplorerTradeTape(
+    [{ ...mk('same', '1700000002000000000'), market_id: '1' }],
+    [{ ...mk('same', '1700000001000000000'), market_id: '2' }],
+  );
+  assert.equal(sameIdDifferentMarkets.length, 2);
 });
