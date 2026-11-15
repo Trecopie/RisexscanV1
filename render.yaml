@@ -11,3 +11,8 @@ services:
         value: production
       - key: NODE_VERSION
         value: 22.16.0
+      - key: RISEX_DB_SOFT_LIMIT_BYTES
+        value: "700000000"
+      # Owner supplies this secret in Render's dashboard at no cost.
+      - key: DATABASE_URL
+        sync: false
