@@ -294,3 +294,18 @@ test('RISEx WebSocket L2 book deltas use 18-decimal wei including zero-size dele
     [{price:'49950.0',quantity:'0.5'}],[]);
   assert.equal(invalid.length,0);
 });
+
+test('actual RISEx WS trade server timestamp wins over block timestamp for candle alignment', () => {
+  const frames = parseWsMarketMessage({
+    channel:'trades',type:'update',market_id:'2',
+    block_timestamp:'1786934140000000000',
+    timestamp:'1786934140123456789',
+    data:{id:'a:b',maker_side:1,price:'201.25',size:'0.25'},
+  });
+  assert.equal(frames.length,1);
+  assert.equal(frames[0].kind,'trade');
+  if(frames[0].kind === 'trade') {
+    assert.equal(frames[0].trade.time,'1786934140123456789');
+    assert.equal(frames[0].trade.maker_side,'1');
+  }
+});
