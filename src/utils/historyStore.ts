@@ -138,6 +138,15 @@ export class HistoryStore {
         ALTER TABLE risexscan_observed_trades ADD COLUMN IF NOT EXISTS size_text TEXT;
         CREATE INDEX IF NOT EXISTS risexscan_trade_time ON risexscan_observed_trades(time_ms);
         CREATE INDEX IF NOT EXISTS risexscan_snapshot_time ON risexscan_market_snapshots(bucket_ms);
+        CREATE TABLE IF NOT EXISTS risexscan_candle_daily(
+          market_id TEXT NOT NULL,day_ms BIGINT NOT NULL,
+          estimated_volume_usd DOUBLE PRECISION NOT NULL,
+          volume_mode TEXT NOT NULL CHECK(volume_mode IN ('base','quote')),
+          source TEXT NOT NULL DEFAULT 'RISEx 1D OHLCV',
+          fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY(market_id,day_ms)
+        );
+        CREATE INDEX IF NOT EXISTS risexscan_candle_daily_day ON risexscan_candle_daily(day_ms);
       `);
       this.ready = true;
     } catch(err) {
@@ -336,6 +345,47 @@ export class HistoryStore {
     }));
     changes.sort((a,b)=>Math.abs(b.deltaNetUsd??0)-Math.abs(a.deltaNetUsd??0));
     return {completeHistory:false,fromTime,toTime,mode:'changes',changes:changes.slice(0,60)};
+  }
+
+  /**
+   * Reconstructed public 1D OHLCV records, separately sourced from the
+   * observed WebSocket trade feed. Historical delisted markets and periods
+   * not returned by RISEx remain unknown. No inception-total assertion.
+   */
+  async getCandleDerivedHistory():Promise<{
+    daily:Array<{time:number;value:number;marketCount:number}>;
+    firstDay:number|null;lastDay:number|null;latestFetchedAt:number|null;
+    distinctMarkets:number;completeHistory:false;source:string;
+  }>{
+    const empty={daily:[] as Array<{time:number;value:number;marketCount:number}>,
+      firstDay:null as number|null,lastDay:null as number|null,
+      latestFetchedAt:null as number|null,distinctMarkets:0,
+      completeHistory:false as const,
+      source:'RISEx public 1D OHLCV, calibrated candle-derived estimates'};
+    if(!this.ready||!this.pool)return empty;
+    try{
+      const [daily,counts]=await Promise.all([
+        this.pool.query(`
+          SELECT day_ms AS time,SUM(estimated_volume_usd) AS volume,
+                 COUNT(DISTINCT market_id) AS market_count
+          FROM risexscan_candle_daily GROUP BY day_ms ORDER BY day_ms ASC LIMIT 1200
+        `),
+        this.pool.query(`
+          SELECT MIN(day_ms) AS first_day,MAX(day_ms) AS last_day,
+                 MAX(fetched_at) AS fetched_at,COUNT(DISTINCT market_id) AS markets
+          FROM risexscan_candle_daily
+        `)
+      ]);
+      const r=counts.rows[0]||{};
+      return {...empty,
+        daily:daily.rows.map(x=>({time:Number(x.time),value:Number(x.volume),
+          marketCount:Number(x.market_count)})),
+        firstDay:r.first_day===null?null:Number(r.first_day),
+        lastDay:r.last_day===null?null:Number(r.last_day),
+        latestFetchedAt:r.fetched_at?new Date(r.fetched_at).getTime():null,
+        distinctMarkets:Number(r.markets||0),
+      };
+    }catch{return empty;}
   }
 
   async getHistoricalAnalytics():Promise<HistoricalAnalyticsPayload>{
