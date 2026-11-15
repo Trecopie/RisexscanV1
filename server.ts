@@ -816,7 +816,7 @@ async function fetchAllRealizedPnl(address: string): Promise<any[]> {
   return cachedCall(`hist:rpnl:${address.toLowerCase()}`, 90_000, async () => {
     const first = await fetchJson(
       `${RISEX_API}/v1/portfolio/realized-pnl?account=${address}&limit=1000&page=1`
-    ).catch(() => null);
+    );
     const page1: any[] = first?.data?.data || [];
     if (page1.length < 1000) return page1;
 
@@ -824,7 +824,7 @@ async function fetchAllRealizedPnl(address: string): Promise<any[]> {
       [2, 3, 4, 5].map((p) =>
         fetchJson(`${RISEX_API}/v1/portfolio/realized-pnl?account=${address}&limit=1000&page=${p}`)
           .then((r) => r?.data?.data || [])
-          .catch(() => [])
+          
       )
     );
     const all = [...page1, ...batch1.flat()];
@@ -834,7 +834,7 @@ async function fetchAllRealizedPnl(address: string): Promise<any[]> {
       [6, 7, 8, 9, 10].map((p) =>
         fetchJson(`${RISEX_API}/v1/portfolio/realized-pnl?account=${address}&limit=1000&page=${p}`)
           .then((r) => r?.data?.data || [])
-          .catch(() => [])
+          
       )
     );
     return [...all, ...batch2.flat()];
@@ -845,7 +845,7 @@ async function fetchAllTradeHistory(address: string): Promise<any[]> {
   return cachedCall(`hist:trades:${address.toLowerCase()}`, 90_000, async () => {
     const first = await fetchJson(
       `${RISEX_API}/v1/trade-history?account=${address}&limit=200&page=1`
-    ).catch(() => null);
+    );
     const page1: any[] = first?.data?.trades || [];
     if (page1.length < 200) return page1;
 
@@ -853,7 +853,7 @@ async function fetchAllTradeHistory(address: string): Promise<any[]> {
       [2, 3, 4].map((p) =>
         fetchJson(`${RISEX_API}/v1/trade-history?account=${address}&limit=200&page=${p}`)
           .then((r) => r?.data?.trades || [])
-          .catch(() => [])
+          
       )
     );
     const all = [...page1, ...batch1.flat()];
@@ -863,7 +863,7 @@ async function fetchAllTradeHistory(address: string): Promise<any[]> {
       [5, 6, 7, 8].map((p) =>
         fetchJson(`${RISEX_API}/v1/trade-history?account=${address}&limit=200&page=${p}`)
           .then((r) => r?.data?.trades || [])
-          .catch(() => [])
+          
       )
     );
     return [...all, ...batch2.flat()];
@@ -1763,8 +1763,10 @@ async function startServer() {
       const summary = details?.summary || null;
       const header = headerRes.status === 'fulfilled' ? headerRes.value?.data : null;
       const cal = calRes.status === 'fulfilled' ? calRes.value?.data : null;
-      const realizedList: any[] = allRealizedRes.status === 'fulfilled' ? allRealizedRes.value : [];
-      const allTradesList: any[] = tradesRes.status === 'fulfilled' ? tradesRes.value : [];
+      const realizedDataAvailable = allRealizedRes.status === 'fulfilled';
+      const tradeHistoryAvailable = tradesRes.status === 'fulfilled';
+      const realizedList: any[] = realizedDataAvailable ? allRealizedRes.value : [];
+      const allTradesList: any[] = tradeHistoryAvailable ? tradesRes.value : [];
       const fundingList: any[] = fundingRes.status === 'fulfilled' ? fundingRes.value : [];
       const marketsList: any[] = marketsListRes.status === 'fulfilled' ? marketsListRes.value : [];
 
@@ -1830,8 +1832,12 @@ async function startServer() {
             liquidationPrice: safeNum(p.liquidation_price),
             leverage: lev,
             unrealizedPnl: uPnl,
-            realizedPnl: openRealizedByMarket.get(mId) ?? null,
-            realizedPnlComplete: (openRealizedCompleteByMarket.get(mId) ?? false) && !realizedEventsCapped,
+            realizedPnl: realizedDataAvailable && tradeHistoryAvailable ? (openRealizedByMarket.get(mId) ?? null) : null,
+            realizedPnlComplete:
+              realizedDataAvailable &&
+              tradeHistoryAvailable &&
+              (openRealizedCompleteByMarket.get(mId) ?? false) &&
+              !realizedEventsCapped,
             roiPct: marginBal > 0 ? (uPnl / marginBal) * 100 : 0,
             marginBalance: marginBal,
             marginMode: p.margin_mode === 1 ? 'Isolated' : 'Cross',
@@ -1959,6 +1965,8 @@ async function startServer() {
           closedTrades,
           tradesCapped: allTradesList.length >= 1600,
           realizedEventsCapped,
+          realizedDataAvailable,
+          tradeHistoryAvailable,
           unverifiedCyclesCount,
           unattributedRealizedEvents: unattributedEventCount,
           header,
