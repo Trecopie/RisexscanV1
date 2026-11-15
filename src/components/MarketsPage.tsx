@@ -324,7 +324,7 @@ export const MarketsPage: React.FC<{
         </div>
       </div>
       </>
-      )
+      )}
     </div>
   );
 };
