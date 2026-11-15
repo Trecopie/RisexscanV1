@@ -4,6 +4,8 @@ import { useMarketStream } from '../context/MarketWebSocketContext';
 import type { MarketWithStats } from '../utils/marketWsPatch';
 import { calcMarketChangePct, formatPct, formatPrice, formatUsd } from '../utils/format';
 import { MarketMiniChart } from './MarketMiniChart';
+import { MarketHeatmap } from './MarketHeatmap';
+import { LayoutGrid, TableProperties } from 'lucide-react';
 import { useMarketSparklines } from '../hooks/useMarketSparklines';
 import { TokenBadge } from './TraderAvatar';
 import { filterDirectoryMarkets, summarizeDirectoryMarkets } from '../utils/marketDirectory';
@@ -27,6 +29,7 @@ export const MarketsPage: React.FC<{
   const [includeInactive, setIncludeInactive] = useState(false);
   const [sortBy, setSortBy] = useState<MarketSortKey>('volume');
   const [sortDesc, setSortDesc] = useState(true);
+  const [marketView, setMarketView] = useState<'screener'|'heatmap'>('screener');
 
   const categories = useMemo(() => {
     const set = new Set<string>(['ALL']);
@@ -108,6 +111,22 @@ export const MarketsPage: React.FC<{
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div role="group" aria-label="Market display" className="inline-flex rounded-xl border border-slate-700/60 bg-[#090e1a] p-1">
+          <button type="button" aria-pressed={marketView==='screener'}
+            onClick={()=>setMarketView('screener')}
+            className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${marketView==='screener'?'bg-[#ffb02e] text-[#160a02]':'text-slate-400 hover:text-[#e8edfb]'}`}>
+            <TableProperties className="h-4 w-4"/> Screener
+          </button>
+          <button type="button" aria-pressed={marketView==='heatmap'}
+            onClick={()=>setMarketView('heatmap')}
+            className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${marketView==='heatmap'?'bg-[#ffb02e] text-[#160a02]':'text-slate-400 hover:text-[#e8edfb]'}`}>
+            <LayoutGrid className="h-4 w-4"/> Heatmap
+          </button>
+        </div>
+        <span className="text-[11px] text-slate-400">Both views use the same live RISEx market feed and filters</span>
+      </div>
+
       {/* Category Filter */}
       <div className="flex flex-wrap items-center gap-1.5">
         {categories.map((cat) => (
@@ -172,6 +191,14 @@ export const MarketsPage: React.FC<{
         </div>
       </div>
 
+      {marketView==='heatmap' ? (
+        <MarketHeatmap
+          markets={filteredMarkets}
+          onSelectMarket={onSelectMarket}
+          onAllMarkets={()=>setMarketView('screener')}
+        />
+      ) : (
+      <>
       {/* Markets Table */}
       <div className="sunrise-card overflow-hidden rounded-2xl">
         <div className="overflow-x-auto">
@@ -297,5 +324,7 @@ export const MarketsPage: React.FC<{
         </div>
       </div>
     </div>
+      </>
+      )
   );
 };
