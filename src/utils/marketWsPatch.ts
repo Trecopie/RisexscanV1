@@ -308,7 +308,7 @@ export function applyWsBatchToMarkets<T extends RisexMarket>(
     const id = frame.marketId;
     if (!marketNameById.has(id)) continue;
 
-    const cur = patches.get(id) || {};
+    const cur: NonNullable<ReturnType<typeof patches.get>> = patches.get(id) ?? {};
     if (frame.kind === 'trade') {
       cur.lastPrice = frame.price;
       // A trade price is last execution, not the oracle mark price.
