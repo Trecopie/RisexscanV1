@@ -1,0 +1,45 @@
+name: Free RISEx historical market candles backfill
+on:
+  schedule:
+    - cron: '21 2,14 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/freeCandleHistoryBackfill.ts'
+      - '.github/workflows/free-candle-history-backfill.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: risex-free-candle-history
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check optional Neon secret
+        id: config
+        shell: bash
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Historical backfill skipped: DATABASE_URL not configured"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install dependencies
+        if: steps.config.outputs.enabled == 'true'
+        run: npm install --no-audit --no-fund
+      - name: Verify raw candle units and persist historical observations
+        if: steps.config.outputs.enabled == 'true'
+        run: npx tsx scripts/freeCandleHistoryBackfill.ts
