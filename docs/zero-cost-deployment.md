@@ -6,9 +6,9 @@
 
 | Purpose | Choice | What it costs | Known limitation |
 |---|---|---|---|
-| Existing Express + Vite RISExScan app | Render Free web service | ₹0 if within free allotments | Sleeps after 15 minutes of no inbound traffic; cold starts and ephemeral filesystem |
+| Existing Express + Vite RISExScan app | Render Free web service | ₹0 if within free allotments | Sleeps after two hours of no inbound traffic; cold starts and ephemeral filesystem |
 | Durable relational database | **Neon Free PostgreSQL** | ₹0 while within plan | 1 GB/project storage, 100 compute-unit-hours/month, 5 GB outgoing transfer/project; suspends at limits |
-| Scheduling independent of Render | **GitHub Actions** on this public repository | Standard runners free | Scheduled tasks can be late/skipped; public repos auto-disable scheduled workflows after 60 days without activity |
+| Scheduling independent of Render | **GitHub Actions** on this private repository | Standard runner usage counts against private-repo included quota | Scheduled tasks can be late/skipped; scheduled runs are best-effort and subject to free Actions limits |
 | Public market and on-chain data | RISEx REST/WS + RISE RPC/Blockscout | Public read API | Latency, rate limits and historical endpoint caps |
 
 Official free-plan references:
@@ -26,7 +26,7 @@ Avoid using **Render Free PostgreSQL** as the only durable history store: Render
 3. In the **Render Dashboard → risexscan service → Environment** set `DATABASE_URL` to that exact secret. Also set `RISEX_DB_SOFT_LIMIT_BYTES=700000000` (700 MB). Never use a `VITE_` prefix or expose `DATABASE_URL` in browser JavaScript.
 4. In **GitHub → Trecopie/RisexscanV1 → Settings → Secrets and variables → Actions → New repository secret**, add the **same** connection string as a secret named `DATABASE_URL`. There is **no need to paste it into ChatGPT**.
 5. Review and merge PR #6 to `main`. Scheduled workflows run only from the **default branch**, so the schedule will not run while the PR is unmerged.
-6. Check GitHub **Actions → Free RISEx market history sampler → Run workflow** once manually. After that the job is scheduled every 15 minutes (at :07, :22, :37, :52 UTC). It uses a bounded REST sample and stops automatically if the 700 MB soft trade-storage guard is reached.
+6. Check GitHub **Actions → Free RISEx market history sampler → Run workflow** once manually. After that the job is scheduled every two hours (at :17 UTC on even-numbered hours). It uses a bounded REST sample and stops automatically if the 700 MB soft trade-storage guard is reached.
 7. Redeploy Render. Visit `/api/health`, `/api/data/freshness` and `/api/analytics/history` on the **actual deployed site address**. Verify `databaseConnected=true`. Never infer a site URL from the GitHub repo name.
 8. Under **Overview → Historical Market Observatory**, actual OI history and deduplicated *observed* volumes/fees should appear once the database contains enough samples. The data quality banner shows missing history rather than filling gaps with fabricated values.
 
@@ -53,6 +53,14 @@ A future, truly complete historical implementation needs a canonical trade/settl
 
 The site-wide **Data & latency** strip includes source freshness, DB connectivity, storage size and whether the raw-trade budget guard has paused writes. GitHub's scheduled workflow logs show if a market has hit the recent-trades cap and must not be interpreted as a full archive. All scripts intentionally avoid printing secrets.
 
-GitHub may disable scheduled workflows after 60 days without activity on a public repo. If the schedule stops, re-enable it in Actions; missing observations remain gaps. This approach improves durability and coverage but is a **best-effort** free solution, not a financial/trading-grade uptime guarantee.
+This repo is private and GitHub Actions compute is metered against the owner's included monthly allowance; monitor Billing → Budgets and alerts. Scheduled jobs may be delayed; missing observations remain gaps. This approach improves durability and coverage but is a **best-effort** free solution, not a financial/trading-grade uptime guarantee.
 
 Alternative: Cloudflare D1's free tier provides up to 5 GB of storage, but the current code uses PostgreSQL and would need a storage-adapter rewrite. Cloudflare's free row read/write quotas are enforced. Use Neon with the existing tested code first.
+
+## Private GitHub repository: ₹0 usage warning (verified 15 Nov 2026)
+
+RISExScanV1 is **private**. Standard GitHub-hosted Actions runners are not unlimited/free as they are for public repositories: runs consume the account's included compute quota. The original 15-minute schedule (~2,880 runs per 30 days) was too aggressive. It has been revised to **once every two hours** (~360 runs in 30 days) to conserve the quota. A sampler run also installs dependencies, so actual billable runner time depends on execution duration. Other CI runs also consume allowance.
+
+Before enabling scheduled collection, open GitHub **Settings → Billing and licensing → Budgets and alerts** (or https://github.com/settings/billing) and enable included-usage alerts. If your account offers a hard **Actions budget with `Stop usage when budget limit is reached`**, configure it so you cannot incur extra Actions charges. An alert without hard-stop is *not* sufficient for an absolute ₹0 pledge.
+
+The reduced frequency increases the risk of **gaps for active markets** because the sampled REST history endpoint returns a capped number of fills. Historical volumes and fees remain best-effort, never all-time totals. Run the sampler manually only when you need more observations; leave the workflow disabled if the included Actions quota is nearly exhausted. Official reference: https://docs.github.com/en/billing/concepts/product-billing/github-actions
