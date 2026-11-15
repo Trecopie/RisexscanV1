@@ -1257,7 +1257,23 @@ async function startServer() {
 
   const app = express();
   app.set('trust proxy', 1);
-  app.use(express.json());
+  app.use(express.json({limit:'32kb'}));
+  // All RISEx venue market IDs are numeric. Validate before interpolating
+  // identifiers into upstream URLs to avoid endpoint/path manipulation.
+  app.param('marketId',(req:Request,res:Response,next,value:string)=>{
+    if(!/^\\d{1,6}$/.test(value)){
+      res.status(400).json({error:'Invalid market ID'});
+      return;
+    }
+    next();
+  });
+  app.param('addressOrUsername',(req:Request,res:Response,next,value:string)=>{
+    if(value.length>120){
+      res.status(400).json({error:'Account query is too long'});
+      return;
+    }
+    next();
+  });
 
   // Public security headers (allow iframe preview in AI Studio while hardening MIME/referrer)
   app.use((_req, res, next) => {
