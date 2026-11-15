@@ -5,6 +5,7 @@ import type { MarketWithStats } from '../utils/marketWsPatch';
 import { calcMarketChangePct, formatPct, formatPrice, formatUsd } from '../utils/format';
 import { MiniSparkline } from './Charts';
 import { TokenBadge } from './TraderAvatar';
+import { RwaMarketsWidget } from './RwaMarketsWidget';
 
 type MarketSortKey = 'volume' | 'oi' | 'change' | 'funding' | 'price' | 'positions';
 
@@ -128,6 +129,8 @@ export const MarketsPage: React.FC<{
           </button>
         </div>
       )}
+
+      <RwaMarketsWidget markets={markets} onSelectMarket={onSelectMarket} />
 
       {/* Markets Table */}
       <div className="sunrise-card overflow-hidden rounded-2xl">
