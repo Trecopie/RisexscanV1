@@ -147,7 +147,7 @@ export function parseWsMarketMessage(raw: unknown): ParsedWsMarketFrame[] {
           maker_side: String(t.maker_side ?? t.side ?? ''),
           price: String(t.price),
           size: String(t.size),
-          time: String(t.time ?? t.block_timestamp ?? msg.block_timestamp ?? msg.worker_timestamp ?? msg.timestamp ?? `${Date.now()}000000`),
+          time: String(t.time ?? msg.timestamp ?? msg.worker_timestamp ?? t.block_timestamp ?? msg.block_timestamp ?? `${Date.now()}000000`),
           block_number: String(t.block_number ?? msg.block_number ?? ''),
           log_index: String(t.log_index ?? msg.log_index ?? ''),
           market_id: marketId,
