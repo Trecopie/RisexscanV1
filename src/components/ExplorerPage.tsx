@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   Blocks,
@@ -27,6 +27,8 @@ import {
   shortAddress,
 } from '../utils/format';
 import { CopyBtn, LiqDistanceBadge, TokenBadge, TraderAvatar } from './TraderAvatar';
+import { useMarketStream } from '../context/MarketWebSocketContext';
+import { deriveLiveLiquidationRisk, mergeExplorerTradeTape, type ExplorerRiskCandidate } from '../utils/explorerLive';
 
 export type ExplorerSubTab = 'blocks' | 'trades' | 'liquidations' | 'funding' | 'decoder';
 
@@ -35,12 +37,16 @@ export const ExplorerPage: React.FC<{
   onSelectWallet: (address: string) => void;
   onSelectMarket: (marketId: string) => void;
 }> = ({ initialTxHash, onSelectWallet, onSelectMarket }) => {
+  const { markets: streamedMarkets, recentTrades: socketTrades, connectionState } = useMarketStream();
   const [subTab, setSubTab] = useState<ExplorerSubTab>(initialTxHash ? 'decoder' : 'blocks');
   const [blocks, setBlocks] = useState<ExplorerBlock[]>([]);
   const [txs, setTxs] = useState<ExplorerTx[]>([]);
   const [systemConfig, setSystemConfig] = useState<SystemConfig | null>(null);
   const [recentTrades, setRecentTrades] = useState<MarketTrade[]>([]);
-  const [atRisk, setAtRisk] = useState<(IndexedPositionRow & { distancePct: number })[]>([]);
+  const [riskCandidates, setRiskCandidates] = useState<ExplorerRiskCandidate[]>([]);
+  const [chainHead, setChainHead] = useState<number | null>(null);
+  const [explorerFetchedAt, setExplorerFetchedAt] = useState<number | null>(null);
+  const [blocksAvailable, setBlocksAvailable] = useState(true);
   const [markets, setMarkets] = useState<RisexMarket[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -52,7 +58,9 @@ export const ExplorerPage: React.FC<{
   const txAbortRef = React.useRef<AbortController | null>(null);
 
   const loadExplorer = async () => {
-    abortRef.current?.abort();
+    // Keep an in-flight Blockscout request alive. Aborting it on each interval
+    // made slow explorer responses appear permanently frozen.
+    if (abortRef.current && !abortRef.current.signal.aborted) return;
     const controller = new AbortController();
     abortRef.current = controller;
     const safeJson = async (url: string) => {
@@ -69,17 +77,26 @@ export const ExplorerPage: React.FC<{
       ]);
       if (controller.signal.aborted) return;
       if (ovRes.status === 'fulfilled' && ovRes.value) {
-        if (ovRes.value.blocks) setBlocks(ovRes.value.blocks);
-        if (ovRes.value.transactions) setTxs(ovRes.value.transactions);
-        if (ovRes.value.systemConfig) setSystemConfig(ovRes.value.systemConfig);
+        const overview = ovRes.value;
+        if (overview.sourceStatus?.blocks === true && Array.isArray(overview.blocks)) {
+          setBlocks(overview.blocks);
+          setBlocksAvailable(true);
+        } else if (overview.sourceStatus?.blocks === false) setBlocksAvailable(false);
+        if (Array.isArray(overview.transactions) && overview.sourceStatus?.transactions !== false) setTxs(overview.transactions);
+        if (overview.systemConfig) setSystemConfig(overview.systemConfig);
+        if (typeof overview.chainHead === 'number') setChainHead(overview.chainHead);
+        if (typeof overview.fetchedAt === 'number') setExplorerFetchedAt(overview.fetchedAt);
       }
       if (trRes.status === 'fulfilled' && trRes.value?.trades) setRecentTrades(trRes.value.trades);
-      if (liqRes.status === 'fulfilled' && liqRes.value?.atRisk) setAtRisk(liqRes.value.atRisk);
+      if (liqRes.status === 'fulfilled' && liqRes.value) {
+        setRiskCandidates(liqRes.value.candidates || liqRes.value.atRisk || []);
+      }
       if (mkRes.status === 'fulfilled' && mkRes.value?.markets) setMarkets(mkRes.value.markets);
     } catch {
       // ignore
     } finally {
       if (!controller.signal.aborted) setLoading(false);
+      if (abortRef.current === controller) abortRef.current = null;
     }
   };
 
@@ -89,7 +106,7 @@ export const ExplorerPage: React.FC<{
       if (document.visibilityState === 'visible') {
         loadExplorer();
       }
-    }, 15000);
+    }, 8000);
     return () => {
       abortRef.current?.abort();
       txAbortRef.current?.abort();
@@ -123,7 +140,15 @@ export const ExplorerPage: React.FC<{
     }
   }, [initialTxHash]);
 
-  const sortedFundingMarkets = [...markets].sort(
+  const liveMarkets = connectionState === 'connected' && streamedMarkets.length > 0
+    ? streamedMarkets
+    : (markets.length > 0 ? markets : streamedMarkets);
+  const atRisk = useMemo(() => deriveLiveLiquidationRisk(riskCandidates, liveMarkets), [riskCandidates, liveMarkets]);
+  const tradeTape = useMemo(() => mergeExplorerTradeTape(socketTrades, recentTrades), [socketTrades, recentTrades]);
+  const indexedHead = Number(blocks[0]?.height || 0);
+  const blockLag = chainHead !== null && indexedHead > 0 ? Math.max(0, chainHead - indexedHead) : null;
+
+  const sortedFundingMarkets = [...liveMarkets].sort(
     (a, b) => Math.abs(Number(b.current_funding_rate || 0)) - Math.abs(Number(a.current_funding_rate || 0))
   );
 
@@ -138,6 +163,16 @@ export const ExplorerPage: React.FC<{
           <h1 className="mt-1 font-display text-2xl sm:text-3xl font-bold text-[#e8edfb]">
             RISEx On-Chain Block & Risk Explorer
           </h1>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] font-mono text-slate-400" aria-live="polite">
+            <span className={connectionState === 'connected' ? 'text-[#22e0a1]' : 'text-[#ffb02e]'}>
+              {connectionState === 'connected' ? '● Market trades live via WebSocket' : '○ Market stream reconnecting'}
+            </span>
+            {chainHead !== null && <span>· RPC head #{chainHead.toLocaleString()}</span>}
+            {blockLag !== null && <span className={blockLag > 6 ? 'text-[#ffb02e]' : ''}>
+              · Explorer index {blockLag} blocks behind
+            </span>}
+            {explorerFetchedAt !== null && <span>· Fetched {new Date(explorerFetchedAt).toLocaleTimeString()}</span>}
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-1 rounded-xl border border-slate-800 bg-[#090e1a] p-1">
@@ -170,6 +205,9 @@ export const ExplorerPage: React.FC<{
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
           <div className="sunrise-card rounded-2xl p-4 lg:col-span-5">
             <h2 className="mb-3 font-display text-base font-bold text-[#e8edfb]">Latest RISE Blocks</h2>
+            {!blocksAvailable && (
+              <div className="mb-2 text-[11px] text-[#ffb02e]">Block explorer is temporarily unavailable; showing the last successful snapshot.</div>
+            )}
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs font-mono tabular-nums">
                 <thead className="border-b border-slate-800 text-[11px] uppercase text-slate-400">
@@ -225,6 +263,9 @@ export const ExplorerPage: React.FC<{
             <h2 className="mb-3 font-display text-base font-bold text-[#e8edfb]">
               Recent RISEx Protocol Transactions
             </h2>
+            <p className="mb-2 text-[11px] text-slate-400">
+              Transactions touching monitored RISEx contracts; this list can stay unchanged even while new RISE blocks arrive.
+            </p>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs font-mono tabular-nums">
                 <thead className="border-b border-slate-800 text-[11px] uppercase text-slate-400">
@@ -290,7 +331,7 @@ export const ExplorerPage: React.FC<{
       {subTab === 'trades' && (
         <div className="sunrise-card overflow-hidden rounded-2xl p-4">
           <h2 className="mb-3 font-display text-base font-bold text-[#e8edfb]">
-            Global RISEx Trade Tape ({recentTrades.length})
+            Global RISEx Trade Tape ({tradeTape.length})
           </h2>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs font-mono tabular-nums">
@@ -306,7 +347,7 @@ export const ExplorerPage: React.FC<{
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
-                {recentTrades.map((tr, i) => {
+                {tradeTape.map((tr, i) => {
                   const isBuy = tr.maker_side?.toLowerCase().includes('buy') || tr.maker_side === '0';
                   const usd = Number(tr.price) * Number(tr.size);
                   return (
@@ -329,7 +370,7 @@ export const ExplorerPage: React.FC<{
                     </tr>
                   );
                 })}
-                {!loading && recentTrades.length === 0 && (
+                {!loading && tradeTape.length === 0 && (
                   <tr>
                     <td colSpan={7} className="py-10 text-center font-sans text-slate-400">
                       No recent trades available right now.
@@ -347,10 +388,10 @@ export const ExplorerPage: React.FC<{
         <div className="sunrise-card overflow-hidden rounded-2xl p-4">
           <div className="mb-3">
             <h2 className="font-display text-base font-bold text-[#e8edfb]">
-              Positions Near Liquidation (&lt;15% Distance)
+              Positions Near Liquidation (&lt;5% Distance)
             </h2>
             <p className="text-xs text-slate-400">
-              Sorted by tightest distance between live Mark Price and Liquidation Price across indexed accounts
+              Uses live oracle mark prices, with cached indexed positions. Strictly less than 5% distance; account positions may lag the underlying indexer.
             </p>
           </div>
           <div className="overflow-x-auto">
@@ -411,7 +452,7 @@ export const ExplorerPage: React.FC<{
                 {atRisk.length === 0 && (
                   <tr>
                     <td colSpan={8} className="py-10 text-center text-slate-400">
-                      No indexed open positions currently within 15% of liquidation.
+                      No indexed open positions currently within 5% of liquidation.
                     </td>
                   </tr>
                 )}

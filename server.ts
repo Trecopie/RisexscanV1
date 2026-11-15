@@ -17,6 +17,7 @@ import { buildCohortsAnalytics } from './src/utils/cohorts.ts';
 import { computeProfitabilitySummary } from './src/utils/overviewAnalytics.ts';
 import { extractWalletAddressesFromLogs, selectIndexerQueue } from './src/utils/indexerQueue.ts';
 import { buildTraderSyncDiagnostic } from './src/utils/pnlDiagnostic.ts';
+import { LIQUIDATION_ALERT_PCT, LIQUIDATION_CANDIDATE_PCT, liquidationDistancePct } from './src/utils/liquidationRisk.ts';
 
 dotenv.config();
 
@@ -1411,19 +1412,41 @@ async function startServer() {
 
   // 5. Liquidation Risk Feed (near-liquidation positions across all indexed traders)
   app.get('/api/liquidations', async (_req: Request, res: Response) => {
-    const atRisk: (PositionRow & { distancePct: number })[] = [];
-    for (const t of tradersMap.values()) {
-      for (const p of t.positions) {
-        if (p.liquidationPrice > 0 && p.markPrice > 0) {
-          const dist = Math.abs((p.liquidationPrice - p.markPrice) / p.markPrice) * 100;
-          if (dist < 15) {
-            atRisk.push({ ...p, distancePct: dist });
+    try {
+      // Indexer snapshots are slow-moving: use fresh market marks instead of
+      // positions' historical mark_price values when calculating proximity.
+      const currentMarkets = await getMarkets().catch(() => marketsCache);
+      const markById = new Map<string, number>();
+      for (const m of currentMarkets) {
+        const mark = safeNum(m.mark_price || m.last_price);
+        if (mark > 0) markById.set(String(m.market_id), mark);
+      }
+      const candidates: (PositionRow & { distancePct: number })[] = [];
+      for (const trader of tradersMap.values()) {
+        if (!trader.portfolioEnriched) continue;
+        for (const p of trader.positions) {
+          const markPrice = markById.get(p.marketId) || p.markPrice;
+          const dist = liquidationDistancePct(markPrice, p.liquidationPrice);
+          if (dist !== null && dist < LIQUIDATION_CANDIDATE_PCT) {
+            candidates.push({ ...p, markPrice, distancePct: dist });
           }
         }
       }
+      candidates.sort((a, b) => a.distancePct - b.distancePct);
+      const atRisk = candidates.filter((p) => p.distancePct < LIQUIDATION_ALERT_PCT).slice(0, 100);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        atRisk,
+        candidates: candidates.slice(0, 500),
+        thresholdPct: LIQUIDATION_ALERT_PCT,
+        marketsUpdatedAt,
+        indexUpdatedAt: lastIndexComplete,
+        fetchedAt: Date.now(),
+        totalIndexed: tradersMap.size,
+      });
+    } catch (err: any) {
+      res.status(503).json({ error: err.message || 'Liquidation risk feed unavailable' });
     }
-    atRisk.sort((a, b) => a.distancePct - b.distancePct);
-    res.json({ atRisk: atRisk.slice(0, 100), totalIndexed: tradersMap.size });
   });
 
   // 5b. Cohort & Bias Analytics (HyperTracker + RiseScreener live aggregation, 5s SWR cached)
@@ -2043,18 +2066,28 @@ async function startServer() {
         const routerAddr = cfg?.addresses?.router || '0xaadde0cea454f2bcb26f46ed54c5709b7bb34a7e';
         const perpsAddr = cfg?.addresses?.perps_manager || '0x53f10facfc8965750494e6965f5d6da39b41d852';
 
-        const [blocksRes, perpsTxRes, routerTxRes] = await Promise.allSettled([
+        const ordersAddr = cfg?.addresses?.orders_manager;
+        const [blocksRes, perpsTxRes, routerTxRes, ordersTxRes, rpcRes] = await Promise.allSettled([
           fetchJson(`${RISE_EXPLORER_API}/blocks`, {}, 8000),
           fetchJson(`${RISE_EXPLORER_API}/addresses/${perpsAddr}/transactions`, {}, 8000),
           fetchJson(`${RISE_EXPLORER_API}/addresses/${routerAddr}/transactions`, {}, 8000),
+          ordersAddr ? fetchJson(`${RISE_EXPLORER_API}/addresses/${ordersAddr}/transactions`, {}, 8000) : Promise.resolve(null),
+          fetchJson(RISE_RPC, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] }),
+          }, 5000),
         ]);
 
         const blocks = blocksRes.status === 'fulfilled' ? blocksRes.value?.items || [] : [];
         const perpsTxs = perpsTxRes.status === 'fulfilled' ? perpsTxRes.value?.items || [] : [];
         const routerTxs = routerTxRes.status === 'fulfilled' ? routerTxRes.value?.items || [] : [];
+        const ordersTxs = ordersTxRes.status === 'fulfilled' ? ordersTxRes.value?.items || [] : [];
+        const rpcHex = rpcRes.status === 'fulfilled' ? rpcRes.value?.result : null;
+        const chainHead = typeof rpcHex === 'string' && /^0x[0-9a-f]+$/i.test(rpcHex) ? parseInt(rpcHex, 16) : null;
 
         const txMap = new Map<string, any>();
-        for (const tx of [...routerTxs, ...perpsTxs]) {
+        for (const tx of [...ordersTxs, ...routerTxs, ...perpsTxs]) {
           if (tx?.hash && !txMap.has(tx.hash)) {
             txMap.set(tx.hash, tx);
           }
@@ -2067,8 +2100,16 @@ async function startServer() {
           systemConfig: cfg,
           blocks: blocks.slice(0, 20),
           transactions,
+          chainHead,
+          fetchedAt: Date.now(),
+          sourceStatus: {
+            blocks: blocksRes.status === 'fulfilled',
+            transactions: [perpsTxRes, routerTxRes, ordersTxRes].some((x) => x.status === 'fulfilled' && Array.isArray(x.value?.items)),
+            rpc: chainHead !== null,
+          },
         };
       });
+      res.setHeader('Cache-Control', 'no-store');
       res.json(payload);
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to load explorer data' });

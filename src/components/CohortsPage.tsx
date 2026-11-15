@@ -819,7 +819,7 @@ export const CohortsPage: React.FC<{
               <div className="flex items-center gap-2">
                 <AlertTriangle className="h-4 w-4 text-[#ffb02e]" />
                 <h3 className="font-display text-base font-bold text-[#e8edfb]">
-                  Near-Liquidation Watchlist (&lt;20% Margin Buffer)
+                  Near-Liquidation Watchlist (&lt;5% Distance)
                 </h3>
               </div>
               <span className="font-mono text-[11px] text-slate-400">
@@ -846,7 +846,7 @@ export const CohortsPage: React.FC<{
                   {data.liquidationRadar.length === 0 && (
                     <tr>
                       <td colSpan={9} className="py-8 text-center text-slate-500">
-                        No tracked open positions are currently within 20% of liquidation price.
+                        No indexed open positions are currently within 5% of liquidation price.
                       </td>
                     </tr>
                   )}

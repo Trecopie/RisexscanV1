@@ -8,6 +8,7 @@ import type {
   PerformanceCohortRow,
 } from '../types/risex.ts';
 import { safeNum } from './tradeLifecycle.ts';
+import { LIQUIDATION_ALERT_PCT, liquidationDistancePct } from './liquidationRisk.ts';
 
 export interface CohortTraderInput {
   address: string;
@@ -155,6 +156,11 @@ export function buildCohortsAnalytics(
     }
   >();
 
+  const liveMarks = new Map<string, number>();
+  for (const m of markets) {
+    const mark = safeNum(m.mark_price || m.last_price);
+    if (mark > 0) liveMarks.set(String(m.market_id), mark);
+  }
   const allCohortPositions: CohortPositionRow[] = [];
   let activeTradersWithPositions = 0;
   let totalIndexedEquity = 0;
@@ -217,13 +223,12 @@ export function buildCohortsAnalytics(
         else ma.retailShort += notl;
       }
 
-      const distLiq =
-        p.liquidationPrice > 0 && p.markPrice > 0
-          ? Math.abs((p.liquidationPrice - p.markPrice) / p.markPrice) * 100
-          : null;
+      const liveMarkPrice = liveMarks.get(p.marketId) || p.markPrice;
+      const distLiq = liquidationDistancePct(liveMarkPrice, p.liquidationPrice);
 
       allCohortPositions.push({
         ...p,
+        markPrice: liveMarkPrice,
         username: p.username ?? t.username ?? null,
         avatarUrl: p.avatarUrl ?? t.avatarUrl ?? null,
         portfolioValue: t.accountValue,
@@ -367,7 +372,7 @@ export function buildCohortsAnalytics(
     .slice(0, 120);
 
   const liquidationRadar = [...allCohortPositions]
-    .filter((p) => p.distanceToLiqPct !== null && p.distanceToLiqPct < 20)
+    .filter((p) => p.distanceToLiqPct !== null && p.distanceToLiqPct < LIQUIDATION_ALERT_PCT)
     .sort((a, b) => (a.distanceToLiqPct ?? 999) - (b.distanceToLiqPct ?? 999))
     .slice(0, 60);
 
