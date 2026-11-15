@@ -76,7 +76,8 @@ interface PositionRow {
   liquidationPrice: number;
   leverage: number;
   unrealizedPnl: number;
-  realizedPnl?: number;
+  realizedPnl?: number | null;
+  realizedPnlComplete?: boolean;
   roiPct: number;
   marginBalance: number;
   marginMode: 'Cross' | 'Isolated';
@@ -815,7 +816,7 @@ async function fetchAllRealizedPnl(address: string): Promise<any[]> {
   return cachedCall(`hist:rpnl:${address.toLowerCase()}`, 90_000, async () => {
     const first = await fetchJson(
       `${RISEX_API}/v1/portfolio/realized-pnl?account=${address}&limit=1000&page=1`
-    ).catch(() => null);
+    );
     const page1: any[] = first?.data?.data || [];
     if (page1.length < 1000) return page1;
 
@@ -823,7 +824,7 @@ async function fetchAllRealizedPnl(address: string): Promise<any[]> {
       [2, 3, 4, 5].map((p) =>
         fetchJson(`${RISEX_API}/v1/portfolio/realized-pnl?account=${address}&limit=1000&page=${p}`)
           .then((r) => r?.data?.data || [])
-          .catch(() => [])
+          
       )
     );
     const all = [...page1, ...batch1.flat()];
@@ -833,7 +834,7 @@ async function fetchAllRealizedPnl(address: string): Promise<any[]> {
       [6, 7, 8, 9, 10].map((p) =>
         fetchJson(`${RISEX_API}/v1/portfolio/realized-pnl?account=${address}&limit=1000&page=${p}`)
           .then((r) => r?.data?.data || [])
-          .catch(() => [])
+          
       )
     );
     return [...all, ...batch2.flat()];
@@ -844,7 +845,7 @@ async function fetchAllTradeHistory(address: string): Promise<any[]> {
   return cachedCall(`hist:trades:${address.toLowerCase()}`, 90_000, async () => {
     const first = await fetchJson(
       `${RISEX_API}/v1/trade-history?account=${address}&limit=200&page=1`
-    ).catch(() => null);
+    );
     const page1: any[] = first?.data?.trades || [];
     if (page1.length < 200) return page1;
 
@@ -852,7 +853,7 @@ async function fetchAllTradeHistory(address: string): Promise<any[]> {
       [2, 3, 4].map((p) =>
         fetchJson(`${RISEX_API}/v1/trade-history?account=${address}&limit=200&page=${p}`)
           .then((r) => r?.data?.trades || [])
-          .catch(() => [])
+          
       )
     );
     const all = [...page1, ...batch1.flat()];
@@ -862,7 +863,7 @@ async function fetchAllTradeHistory(address: string): Promise<any[]> {
       [5, 6, 7, 8].map((p) =>
         fetchJson(`${RISEX_API}/v1/trade-history?account=${address}&limit=200&page=${p}`)
           .then((r) => r?.data?.trades || [])
-          .catch(() => [])
+          
       )
     );
     return [...all, ...batch2.flat()];
@@ -1762,17 +1763,38 @@ async function startServer() {
       const summary = details?.summary || null;
       const header = headerRes.status === 'fulfilled' ? headerRes.value?.data : null;
       const cal = calRes.status === 'fulfilled' ? calRes.value?.data : null;
-      const realizedList: any[] = allRealizedRes.status === 'fulfilled' ? allRealizedRes.value : [];
-      const allTradesList: any[] = tradesRes.status === 'fulfilled' ? tradesRes.value : [];
+      const realizedDataAvailable = allRealizedRes.status === 'fulfilled';
+      const tradeHistoryAvailable = tradesRes.status === 'fulfilled';
+      const realizedList: any[] = realizedDataAvailable ? allRealizedRes.value : [];
+      const allTradesList: any[] = tradeHistoryAvailable ? tradesRes.value : [];
       const fundingList: any[] = fundingRes.status === 'fulfilled' ? fundingRes.value : [];
       const marketsList: any[] = marketsListRes.status === 'fulfilled' ? marketsListRes.value : [];
 
-      const { openRealizedByMarket, closedTrades } = reconstructTradeLifecycles(
+      const {
+        openRealizedByMarket,
+        openRealizedCompleteByMarket,
+        closedTrades: reconstructedCycles,
+        unattributedEventCount,
+      } = reconstructTradeLifecycles(
         details?.positions || [],
         allTradesList,
         realizedList,
         marketsList
       );
+      // Only publish cycles fully covered by the official settlement history.
+      // If the 10,000-event limit cuts through a position, its visible events
+      // are just a partial sum, even though the fill lifecycle itself closed.
+      const realizedEventsCapped = realizedList.length >= 10000;
+      const firstRealizedMs = realizedList.reduce((earliest: number, event: any) => {
+        const time = nsToMs(event?.timestamp);
+        return time > 0 ? Math.min(earliest, time) : earliest;
+      }, Infinity);
+      const closedTrades = reconstructedCycles.filter(
+        (cycle) =>
+          cycle.officialEventCount > 0 &&
+          (!realizedEventsCapped || nsToMs(cycle.openTime) >= firstRealizedMs - 1500)
+      );
+      const unverifiedCyclesCount = reconstructedCycles.length - closedTrades.length;
 
       // Summarize metrics across official RISEx realized PnL events (falls back to closedTrades if empty)
       const realizedSummary = summarizeRealizedEvents(
@@ -1810,7 +1832,12 @@ async function startServer() {
             liquidationPrice: safeNum(p.liquidation_price),
             leverage: lev,
             unrealizedPnl: uPnl,
-            realizedPnl: openRealizedByMarket.get(mId) ?? 0,
+            realizedPnl: realizedDataAvailable && tradeHistoryAvailable ? (openRealizedByMarket.get(mId) ?? null) : null,
+            realizedPnlComplete:
+              realizedDataAvailable &&
+              tradeHistoryAvailable &&
+              (openRealizedCompleteByMarket.get(mId) ?? false) &&
+              !realizedEventsCapped,
             roiPct: marginBal > 0 ? (uPnl / marginBal) * 100 : 0,
             marginBalance: marginBal,
             marginMode: p.margin_mode === 1 ? 'Isolated' : 'Cross',
@@ -1937,6 +1964,11 @@ async function startServer() {
           positions,
           closedTrades,
           tradesCapped: allTradesList.length >= 1600,
+          realizedEventsCapped,
+          realizedDataAvailable,
+          tradeHistoryAvailable,
+          unverifiedCyclesCount,
+          unattributedRealizedEvents: unattributedEventCount,
           header,
           statsByPeriod: {
             '7d': stats7dRes.status === 'fulfilled' ? stats7dRes.value?.data : null,

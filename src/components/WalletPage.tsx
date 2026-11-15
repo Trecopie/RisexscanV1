@@ -59,7 +59,7 @@ export const WalletPage: React.FC<{
   const [activeTab, setActiveTab] = useState<WalletTab>('positions');
 
   // Realized PnL tab filters & sorting
-  const [rzViewMode, setRzViewMode] = useState<'events' | 'cycles'>('events');
+  const [rzViewMode, setRzViewMode] = useState<'events' | 'cycles'>('cycles');
   const [rzTimeframe, setRzTimeframe] = useState<TimeframeKey>('all');
   const [rzMarketFilter, setRzMarketFilter] = useState<string>('ALL');
   const [rzSideFilter, setRzSideFilter] = useState<'ALL' | 'LONG' | 'SHORT'>('ALL');
@@ -779,7 +779,7 @@ export const WalletPage: React.FC<{
                 { id: 'positions', label: `Open Positions (${data.positions.length})` },
                 {
                   id: 'realized',
-                  label: `Realized PnL (${(data.realizedPnlHistory?.length || data.closedTrades.length).toLocaleString()})`,
+                  label: 'Realized PnL',
                 },
                 { id: 'fills', label: `Trade Fills (${data.trades.length})` },
                 { id: 'orders', label: `Orders (${data.openOrders.length} open / ${data.orderHistory.length})` },
@@ -805,6 +805,11 @@ export const WalletPage: React.FC<{
           {/* TAB 1: OPEN POSITIONS */}
           {activeTab === 'positions' && (
             <div className="sunrise-card overflow-hidden rounded-2xl">
+              {(data.realizedDataAvailable === false || data.tradeHistoryAvailable === false) && (
+                <div className="border-b border-[#ffb02e]/30 bg-[#ffb02e]/10 px-4 py-2 text-xs text-[#ffb02e]">
+                  The historical realized-PnL or fills endpoint is temporarily unavailable; open-position partial realized PnL cannot be verified. Unrealized PnL still comes from the live portfolio.
+                </div>
+              )}
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead className="border-b border-slate-800 bg-[#090e1a]/80 text-[11px] uppercase tracking-wider text-slate-400">
@@ -816,13 +821,13 @@ export const WalletPage: React.FC<{
                       <th className="py-3 px-2 text-right">Mark</th>
                       <th className="py-3 px-2 text-right">Liq. Price & Risk</th>
                       <th className="py-3 px-2 text-right">Unrealized PnL</th>
-                      <th className="py-3 px-2 text-right">Realized PnL</th>
+                      <th className="py-3 px-2 text-right" title="Realized PnL from partial closes on this currently open position">Realized PnL</th>
                       <th className="py-3 pl-2 pr-4 text-right">ROI %</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 font-mono tabular-nums">
                     {data.positions.map((p, i) => {
-                      const openRpnl = p.realizedPnl ?? 0;
+                      const openRpnl = p.realizedPnl;
                       return (
                         <tr
                           key={i}
@@ -867,14 +872,23 @@ export const WalletPage: React.FC<{
                           </td>
                           <td
                             className={`py-3 px-2 text-right font-semibold ${
-                              openRpnl > 0
+                              openRpnl !== null && openRpnl !== undefined && openRpnl > 0
                                 ? 'text-[#22e0a1]'
-                                : openRpnl < 0
+                                : openRpnl !== null && openRpnl !== undefined && openRpnl < 0
                                   ? 'text-[#ff4d6d]'
                                   : 'text-slate-500'
                             }`}
                           >
-                            {formatSignedUsd(openRpnl)}
+                            {openRpnl === null || openRpnl === undefined ? (
+                              <span title="Partial-close realized PnL is unavailable without sufficient historical fills">—</span>
+                            ) : (
+                              <div>
+                                <span>{p.realizedPnlComplete ? '' : '≈'}{formatSignedUsd(openRpnl)}</span>
+                                {!p.realizedPnlComplete && (
+                                  <div className="mt-0.5 text-[10px] font-normal text-slate-500" title="Only observed realization events in the available trade-history window; total may differ">Partial history</div>
+                                )}
+                              </div>
+                            )}
                           </td>
                           <td
                             className={`py-3 pl-2 pr-4 text-right font-semibold ${
@@ -899,29 +913,14 @@ export const WalletPage: React.FC<{
             </div>
           )}
 
-          {/* TAB 2: REALIZED PNL (Official Realized Events by Default + Closed Cycles View) */}
+          {/* TAB 2: REALIZED PNL (complete trade aggregates by default) */}
           {activeTab === 'realized' && (
             <div className="space-y-5">
               {/* Filter & Sort Controls */}
               <div className="sunrise-card flex flex-wrap items-center justify-between gap-3 rounded-2xl p-4">
                 <div className="flex flex-wrap items-center gap-2">
-                  {/* View Switcher: Official Events vs Reconstructed Full Position Cycles */}
+                  {/* Switch between fully closed trade lifecycles and individual settlements. */}
                   <div className="flex items-center gap-1 rounded-xl border border-slate-800 bg-[#090e1a] p-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setRzViewMode('events');
-                        setRzMarketFilter('ALL');
-                        setRzShowAll(false);
-                      }}
-                      className={`rounded-lg px-2.5 py-1 text-xs font-mono transition-colors ${
-                        rzViewMode === 'events'
-                          ? 'bg-[#22e0a1] font-semibold text-[#041b12]'
-                          : 'text-slate-400 hover:text-[#e8edfb]'
-                      }`}
-                    >
-                      Realized Events ({(data.realizedPnlHistory?.length || 0).toLocaleString()})
-                    </button>
                     <button
                       type="button"
                       onClick={() => {
@@ -935,7 +934,22 @@ export const WalletPage: React.FC<{
                           : 'text-slate-400 hover:text-[#e8edfb]'
                       }`}
                     >
-                      Closed Cycles ({data.closedTrades.length.toLocaleString()})
+                      Aggregated Trades ({data.closedTrades.length.toLocaleString()})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRzViewMode('events');
+                        setRzMarketFilter('ALL');
+                        setRzShowAll(false);
+                      }}
+                      className={`rounded-lg px-2.5 py-1 text-xs font-mono transition-colors ${
+                        rzViewMode === 'events'
+                          ? 'bg-[#22e0a1] font-semibold text-[#041b12]'
+                          : 'text-slate-400 hover:text-[#e8edfb]'
+                      }`}
+                    >
+                      Partial Closes ({(data.realizedPnlHistory?.length || 0).toLocaleString()})
                     </button>
                   </div>
 
@@ -1005,6 +1019,27 @@ export const WalletPage: React.FC<{
                 </div>
               </div>
 
+              {(data.realizedDataAvailable === false || data.tradeHistoryAvailable === false) && (
+                <div className="rounded-xl border border-[#ffb02e]/40 bg-[#ffb02e]/10 px-4 py-3 text-xs text-[#ffb02e]">
+                  RISEx historical data is temporarily unavailable. Please retry the profile later; a zero or blank aggregate here does not mean the account has no realized PnL.
+                </div>
+              )}
+              <div className="rounded-xl border border-slate-800 bg-[#090e1a]/70 px-4 py-3 text-xs text-slate-400">
+                {rzViewMode === 'cycles'
+                  ? 'Aggregated Trades combines all partial realizations belonging to a fully closed position (including reversals), and excludes partial realizations on currently open positions. PnL is credited to the final close date, so daily bars may differ from the settlement-date calendar.'
+                  : 'Partial Closes shows individual official RISEx realized-PnL events, including trims of positions that are still open. These amounts must not be added to Aggregated Trades totals.'}
+                {rzViewMode === 'cycles' &&
+                  (data.tradesCapped || data.realizedEventsCapped || (data.unverifiedCyclesCount || 0) > 0 || (data.unattributedRealizedEvents || 0) > 0) && (
+                    <div className="mt-2 text-[#ffb02e]">
+                      Historical coverage is limited: {data.tradesCapped ? 'trade fills are capped; ' : ''}
+                      {data.realizedEventsCapped ? 'settlements are capped; ' : ''}
+                      {(data.unverifiedCyclesCount || 0) > 0 ? `${data.unverifiedCyclesCount} closed lifecycles without matching official settlement events excluded; ` : ''}
+                      {(data.unattributedRealizedEvents || 0) > 0 ? `${data.unattributedRealizedEvents} settlement events could not be assigned to a completed cycle. ` : ''}
+                      Aggregated totals may be lower than the all-time realized PnL in the profile header.
+                    </div>
+                  )}
+              </div>
+
               {/* Realized PnL Summary Cards */}
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
                 <div className="sunrise-card rounded-xl p-3.5">
@@ -1017,8 +1052,8 @@ export const WalletPage: React.FC<{
                     {formatSignedUsd(realizedStats.netPnl)}
                   </div>
                   <div className="text-[10px] font-mono text-slate-400">
-                    {realizedStats.count.toLocaleString()} {rzViewMode === 'events' ? 'realized events' : 'closed cycles'}
-                    {rzViewMode === 'cycles' && data.tradesCapped && ' (1,600-fill window)'}
+                    {realizedStats.count.toLocaleString()} {rzViewMode === 'events' ? 'realization events' : 'completed trades'}
+                    {rzViewMode === 'cycles' && data.tradesCapped && ' (recent-fill window)'}
                   </div>
                 </div>
                 <div className="sunrise-card rounded-xl p-3.5">
@@ -1174,8 +1209,8 @@ export const WalletPage: React.FC<{
                         <tr>
                           <td colSpan={8} className="py-10 text-center font-sans text-slate-400">
                             {rzViewMode === 'cycles'
-                              ? 'No complete 0→0 position cycles fit in the latest 1,600 fills. Switch to Realized Events to see all settlement closes.'
-                              : 'No realized PnL events match the active filters.'}
+                              ? 'No completed trades could be verified within the available fill and settlement history. Switch to Partial Closes to review individual realization events.'
+                              : 'No individual realized-PnL events match these filters.'}
                           </td>
                         </tr>
                       )}
@@ -1186,7 +1221,7 @@ export const WalletPage: React.FC<{
                   <div className="flex items-center justify-between border-t border-slate-800/80 bg-[#090e1a]/70 px-4 py-2.5 text-xs text-slate-400">
                     <span className="font-mono">
                       Showing {rzShowAll ? sortedRealizedRows.length.toLocaleString() : '200'} of{' '}
-                      {sortedRealizedRows.length.toLocaleString()} events
+                      {sortedRealizedRows.length.toLocaleString()} {rzViewMode === 'cycles' ? 'completed trades' : 'events'}
                     </span>
                     <button
                       type="button"
