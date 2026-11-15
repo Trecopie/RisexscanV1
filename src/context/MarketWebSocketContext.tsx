@@ -115,13 +115,13 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
   const sendSubscriptions = useCallback((ws: WebSocket, list: MarketWithStats[]) => {
     if (ws.readyState !== WebSocket.OPEN || list.length === 0) return;
 
-    const activeSorted = [...list]
+    // Stable market-ID ordering prevents duplicate subscriptions whenever
+    // rolling 24h volume changes the relative volume leaderboard order.
+    const allIds = list
       .filter((m) => m.active !== false)
-      .sort((a, b) => Number(b.quote_volume_24h || 0) - Number(a.quote_volume_24h || 0));
-
-    const allIds = activeSorted
       .map((m) => Number(m.market_id))
-      .filter((id) => Number.isFinite(id));
+      .filter((id) => Number.isInteger(id) && id >= 0)
+      .sort((a, b) => a - b);
     if (allIds.length === 0) return;
 
     const key = allIds.join(',');
