@@ -11,7 +11,7 @@ This report is based on inspected GitHub PR #6 code, previous merged PRs, GitHub
 | RiseScreener-equivalent historical cumulative volume, OI and fees | **Partial, improved.** Official REST hourly OI; deduplicated WS/REST-observed trade volumes and only fees explicitly reported. | Observations start when active; missed jobs/high-throughput truncated history remain gaps. 90 observed day chart window, not lifetime. Unknown fee totals stay null |
 | Curated authentic ticker logos + fallback | **Implemented:** known crypto logos and equity brand icons from curated CDN locations, existing vector marks when unavailable. | Not every token has a verified asset logo, and external CDNs can fail. Reduced-motion-aware hover added |
 | Free persistent PostgreSQL | **Implementation ready in PR #6**, real Postgres 16 integration test added. Neon Free supports ₹0 plans. | Owner must create free project, set private `DATABASE_URL` in Render and GitHub Actions, then merge/redeploy. 700 MB safe budget, 1 GB provider limit |
-| Independent collector when Render sleeps | **New improvement:** scheduled GitHub Actions public REST sampling every 15 minutes into Neon | Only after PR merged to main; the job is inert until Actions secret exists. Missed schedules/trade-history cap prevent gapless history |
+| Independent collector when Render sleeps | **New improvement:** scheduled GitHub Actions public REST sampling every two hours into Neon | Only after PR merged to main; the job is inert until Actions secret exists. Missed schedules/trade-history cap prevent gapless history |
 | Data freshness indicators | **Implemented:** oracle WS, REST, wallet indexer, database status, trade collector and quota guard | Connection status does not guarantee that the exchange emitted a trade this second |
 | Real 24h mini OHLCV | **Implemented:** actual RISEx hourly candles batched/cached, with 24h change meter fallback | 1h bars and cache can be minutes old; not a second-by-second micro-price stream |
 | API/browser performance monitoring | **Implemented:** backend bounded p50/p95/error counters, browser-local TTFB/FCP/LCP and resource p95 | Production simultaneous-load tests and device-side waterfall still outstanding |
@@ -23,7 +23,7 @@ This report is based on inspected GitHub PR #6 code, previous merged PRs, GitHub
 
 ## Zero-cost owner setup
 
-Follow [the step-by-step guide](zero-cost-deployment.md). Use Neon **Free**, Render **Free** and free standard GitHub Actions on the **public** repository. Add `DATABASE_URL` as a private environment secret in both hosting and GitHub Actions. Never post it in chat or commit it.
+Follow [the step-by-step guide](zero-cost-deployment.md). Use Neon **Free**, Render **Free** and free GitHub Actions for the **private** repository (within its included monthly compute allotment). Add `DATABASE_URL` as a private environment secret in both hosting and GitHub Actions. Never post it in chat or commit it.
 
 ## Release acceptance
 
