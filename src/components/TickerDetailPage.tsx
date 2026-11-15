@@ -69,6 +69,8 @@ export const TickerDetailPage: React.FC<{
   const [allMarkets, setAllMarkets] = useState<RisexMarket[]>([]);
   const [candles, setCandles] = useState<MarketCandle[]>([]);
   const [resolution, setResolution] = useState('1H');
+  const resolutionRef = React.useRef(resolution);
+  resolutionRef.current = resolution;
   const [orderbook, setOrderbook] = useState<{ bids: OrderbookLevel[]; asks: OrderbookLevel[] }>({
     bids: [],
     asks: [],
@@ -269,7 +271,7 @@ export const TickerDetailPage: React.FC<{
                       size: Number(tr.size),
                       timeMs: nsToMs(tr.time) || Date.now(),
                     },
-                    resolution
+                    resolutionRef.current
                   );
                 }
                 return bars.map((b) => ({
@@ -333,7 +335,7 @@ export const TickerDetailPage: React.FC<{
         // ignore
       }
     };
-  }, [marketId, resolution]);
+  }, [marketId]);
 
   const sortedPositions = useMemo(() => {
     const raw = analytics?.positions || [];
