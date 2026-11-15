@@ -19,9 +19,9 @@ export interface CohortSnapshot {
 }
 export interface PositionChange {
   marketId:string;cohort:string;
-  fromTime:number;toTime:number;
-  previousNetUsd:number;currentNetUsd:number;
-  deltaNetUsd:number;
+  fromTime:number|null;toTime:number;
+  previousNetUsd:number|null;currentNetUsd:number;
+  deltaNetUsd:number|null;
   currentLongUsd:number;currentShortUsd:number;
   positionCount:number;
 }
@@ -261,15 +261,30 @@ export class HistoryStore {
     `,[json]);
   }
 
-  async getPositionChanges():Promise<{completeHistory:false;fromTime:number|null;toTime:number|null;changes:PositionChange[]}>{
-    const empty={completeHistory:false as const,fromTime:null,toTime:null,changes:[] as PositionChange[]};
+  async getPositionChanges():Promise<{completeHistory:false;fromTime:number|null;toTime:number|null;mode:'unavailable'|'current'|'changes';changes:PositionChange[]}>{
+    const empty={completeHistory:false as const,fromTime:null,toTime:null,mode:'unavailable' as const,changes:[] as PositionChange[]};
     if(!this.ready || !this.pool)return empty;
     const hours=await this.pool.query(`
       SELECT DISTINCT bucket_ms FROM risexscan_cohort_snapshots ORDER BY bucket_ms DESC LIMIT 2
     `);
-    if(hours.rows.length<2)return {
-      ...empty,toTime:hours.rows[0] ? Number(hours.rows[0].bucket_ms) : null,
-    };
+    if(hours.rows.length===0)return empty;
+    // A single hourly bucket has current exposure, not evidence of a change.
+    // Do not treat a missing previous sample as zero positions.
+    if(hours.rows.length===1){
+      const toTime=Number(hours.rows[0].bucket_ms);
+      const current=await this.pool.query(`
+        SELECT market_id,cohort,long_usd,short_usd,position_count
+        FROM risexscan_cohort_snapshots WHERE bucket_ms=$1
+        ORDER BY ABS(long_usd-short_usd) DESC LIMIT 60
+      `,[toTime]);
+      const changes:PositionChange[]=current.rows.map(v=>({
+        marketId:v.market_id,cohort:v.cohort,fromTime:null,toTime,
+        previousNetUsd:null,currentNetUsd:Number(v.long_usd)-Number(v.short_usd),deltaNetUsd:null,
+        currentLongUsd:Number(v.long_usd),currentShortUsd:Number(v.short_usd),
+        positionCount:Number(v.position_count),
+      }));
+      return {completeHistory:false,fromTime:null,toTime,mode:'current',changes};
+    }
     const toTime=Number(hours.rows[0].bucket_ms),fromTime=Number(hours.rows[1].bucket_ms);
     const data=await this.pool.query(`
       SELECT COALESCE(n.market_id,p.market_id) AS market_id,
@@ -283,7 +298,7 @@ export class HistoryStore {
       FULL OUTER JOIN (SELECT * FROM risexscan_cohort_snapshots WHERE bucket_ms=$1) p
       ON p.market_id=n.market_id AND p.cohort=n.cohort
     `,[fromTime,toTime]);
-    const changes=data.rows.map(v=>({
+    const changes:PositionChange[]=data.rows.map(v=>({
       marketId:v.market_id,cohort:v.cohort,fromTime,toTime,
       previousNetUsd:Number(v.old_long)-Number(v.old_short),
       currentNetUsd:Number(v.long_usd)-Number(v.short_usd),
@@ -291,8 +306,8 @@ export class HistoryStore {
       currentLongUsd:Number(v.long_usd),currentShortUsd:Number(v.short_usd),
       positionCount:Number(v.position_count),
     }));
-    changes.sort((a,b)=>Math.abs(b.deltaNetUsd)-Math.abs(a.deltaNetUsd));
-    return {completeHistory:false,fromTime,toTime,changes:changes.slice(0,60)};
+    changes.sort((a,b)=>Math.abs(b.deltaNetUsd??0)-Math.abs(a.deltaNetUsd??0));
+    return {completeHistory:false,fromTime,toTime,mode:'changes',changes:changes.slice(0,60)};
   }
 
   async getHistoricalAnalytics():Promise<HistoricalAnalyticsPayload>{
