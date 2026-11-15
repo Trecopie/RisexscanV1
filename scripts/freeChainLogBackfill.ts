@@ -13,7 +13,7 @@ const EXPLORER='https://explorer.risechain.com/api/v2';
 const RPC=process.env.RISE_CHAIN_RPC || 'https://rpc.risechain.com/';
 const NETWORK_ID=4153;
 const MAX_LOGS=900; // RISE Blockscout legacy API limits responses to 1000 logs
-const MAX_WINDOWS=65;
+const MAX_WINDOWS=100; // time budget remains bounded and enforced independently
 const DEADLINE_MS=5*60_000;
 const STORAGE_SOFT_STOP_BYTES=550_000_000;
 const CONFIRMATIONS=16;
@@ -246,7 +246,10 @@ async function main():Promise<void>{
     const stopAt=Date.now()+DEADLINE_MS;
     let verifiedContracts=0;
     let committedRanges=0;
-    for(const item of CONTRACTS){
+    // Rotate contract priority each hourly run so one busy manager cannot starve another.
+    const turn=new Date().getUTCHours()%CONTRACTS.length;
+    const fairOrder=[...CONTRACTS.slice(turn),...CONTRACTS.slice(0,turn)];
+    for(const item of fairOrder){
       if(Date.now()>=stopAt)break;
       const verified=await verifiedDeployment(item.role,item.address,config)
         .catch(err=>{console.warn(item.role+': deployment verification unavailable: '+
@@ -260,7 +263,7 @@ async function main():Promise<void>{
           console.warn('Neon storage guard reached, stopping scans.');
           break;
         }
-        const to=Math.min(tip,from+1999);
+        const to=Math.min(tip,from+9999); // adaptive halving handles provider range or log limits
         const page=await readSafeRange(item.address,from,to);
         await commitRange(pool,item.address,verified.start,verified.creationHash,
           from,page.to,page.logs);
