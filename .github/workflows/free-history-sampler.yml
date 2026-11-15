@@ -2,10 +2,12 @@ name: Free RISEx market history sampler
 
 # Runs independently of Render, so database snapshots can continue while the
 # website sleeps. The workflow is inert until DATABASE_URL is configured.
+# Private repository: deliberately run every 2 hours (~360 runs/month), not
+# every 15 minutes (~2,880/month), to preserve GitHub's included compute.
 # GitHub's schedule is best effort: jobs may be delayed or skipped.
 on:
   schedule:
-    - cron: '7,22,37,52 * * * *'
+    - cron: '17 */2 * * *'
   workflow_dispatch:
 
 permissions:
