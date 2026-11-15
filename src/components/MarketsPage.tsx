@@ -5,9 +5,17 @@ import type { MarketWithStats } from '../utils/marketWsPatch';
 import { calcMarketChangePct, formatPct, formatPrice, formatUsd } from '../utils/format';
 import { MiniSparkline } from './Charts';
 import { TokenBadge } from './TraderAvatar';
-import { RwaMarketsWidget } from './RwaMarketsWidget';
+import { filterDirectoryMarkets, summarizeDirectoryMarkets } from '../utils/marketDirectory';
 
 type MarketSortKey = 'volume' | 'oi' | 'change' | 'funding' | 'price' | 'positions';
+
+const CATEGORY_TITLES: Record<string, string> = {
+  ALL: 'All Markets',
+  CRYPTO: 'Crypto Markets',
+  COMMODITY: 'Commodity Markets',
+  STOCKS: 'Stock Markets',
+  INDEX_ETF: 'Index ETF Markets',
+};
 
 export const MarketsPage: React.FC<{
   onSelectMarket: (marketId: string) => void;
@@ -26,20 +34,15 @@ export const MarketsPage: React.FC<{
     return Array.from(set);
   }, [markets]);
 
-  const filteredAndSorted = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const list = markets.filter((m) => {
-      if (category !== 'ALL' && (m.category || '').toUpperCase() !== category) return false;
-      if (q) {
-        const hit =
-          m.display_name.toLowerCase().includes(q) ||
-          m.base_asset_symbol.toLowerCase().includes(q) ||
-          (m.search_tags || []).some((t) => t.toLowerCase().includes(q));
-        if (!hit) return false;
-      }
-      return true;
-    });
+  // The rows and summary cards always use the same filtered market subset.
+  const filteredMarkets = useMemo(
+    () => filterDirectoryMarkets(markets, category, search),
+    [markets, category, search]
+  );
+  const summary = useMemo(() => summarizeDirectoryMarkets(filteredMarkets), [filteredMarkets]);
+  const activeHeading = CATEGORY_TITLES[category] || `${category.replaceAll('_', ' ')} Markets`;
 
+  const filteredAndSorted = useMemo(() => {
     const getVal = (m: MarketWithStats): number => {
       const mark = Number(m.mark_price || m.last_price || 0);
       switch (sortBy) {
@@ -58,11 +61,11 @@ export const MarketsPage: React.FC<{
       }
     };
 
-    return [...list].sort((a, b) => {
+    return [...filteredMarkets].sort((a, b) => {
       const diff = getVal(b) - getVal(a);
       return sortDesc ? diff : -diff;
     });
-  }, [markets, search, category, sortBy, sortDesc]);
+  }, [filteredMarkets, sortBy, sortDesc]);
 
   const toggleSort = (k: MarketSortKey) => {
     if (sortBy === k) setSortDesc((d) => !d);
@@ -78,10 +81,10 @@ export const MarketsPage: React.FC<{
         <div>
           <div className="flex items-center gap-2 text-xs font-mono text-[#ffb02e]">
             <BarChart3 className="h-3.5 w-3.5" />
-            RISEx PERPETUAL MARKETS ({markets.length})
+            RISEx PERPETUAL MARKETS ({loading && markets.length === 0 ? '—' : summary.marketCount})
           </div>
           <h1 className="mt-1 font-display text-2xl sm:text-3xl font-bold text-[#e8edfb]">
-            All Markets & Live Positioning
+            {activeHeading} & Live Positioning
           </h1>
         </div>
 
@@ -130,7 +133,27 @@ export const MarketsPage: React.FC<{
         </div>
       )}
 
-      <RwaMarketsWidget markets={markets} onSelectMarket={onSelectMarket} />
+      {/* A single category-aware market summary replaces the redundant RWA section. */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3" aria-label={`${activeHeading} summary`}>
+        <div className="sunrise-card rounded-xl p-4">
+          <div className="text-[11px] font-mono uppercase tracking-wider text-slate-400">Markets</div>
+          <div className="mt-1 font-mono text-xl font-bold tabular-nums text-[#e8edfb]">
+            {loading && markets.length === 0 ? '—' : summary.marketCount.toLocaleString()}
+          </div>
+        </div>
+        <div className="sunrise-card rounded-xl p-4">
+          <div className="text-[11px] font-mono uppercase tracking-wider text-slate-400">24h Volume</div>
+          <div className="mt-1 font-mono text-xl font-bold tabular-nums text-[#e8edfb]">
+            {loading && markets.length === 0 ? '—' : formatUsd(summary.volume24h, true)}
+          </div>
+        </div>
+        <div className="sunrise-card rounded-xl p-4">
+          <div className="text-[11px] font-mono uppercase tracking-wider text-slate-400">Open Interest (USD)</div>
+          <div className="mt-1 font-mono text-xl font-bold tabular-nums text-[#e8edfb]">
+            {loading && markets.length === 0 ? '—' : formatUsd(summary.openInterestUsd, true)}
+          </div>
+        </div>
+      </div>
 
       {/* Markets Table */}
       <div className="sunrise-card overflow-hidden rounded-2xl">
