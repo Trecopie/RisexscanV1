@@ -1,0 +1,30 @@
+name: Live deployed-site parity audit
+
+# Owner-triggered only. Use the actual published RISExScan HTTPS URL.
+# This does not access any private endpoints or require credentials.
+on:
+  workflow_dispatch:
+    inputs:
+      site_url:
+        description: 'Published RISExScan HTTPS origin, e.g. https://your-project.onrender.com'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SITE_URL: ${{ inputs.site_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm install --no-audit --no-fund
+      - name: Read-only deployed API status and market parity
+        run: npx tsx scripts/liveSiteParityAudit.ts
