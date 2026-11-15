@@ -15,6 +15,15 @@ test('PostgreSQL round trip: durable traders, state, unique trades, OI and cohor
       let loaded:any[]=[];
       await store.loadTraders(rows=>{loaded.push(...rows);});
       assert.ok(loaded.some(t=>t.address.toLowerCase()===marker && t.username==='ci-verify'));
+      // Independent worker updates must be picked up and never overwritten by stale saves.
+      await store.upsertTraders([{address:marker,username:'worker-fresh',lastUpdated:10,backfillWorkerAt:10}]);
+      const backfill=await store.loadWalletBackfillUpdates('1970-01-01T00:00:00Z','',100);
+      assert.ok(backfill.records.some(t=>t.address===marker && t.username==='worker-fresh'));
+      assert.ok(backfill.cursorTime);
+      await store.upsertTraders([{address:marker,username:'outdated',lastUpdated:5}]);
+      loaded=[];
+      await store.loadTraders(rows=>{loaded.push(...rows);});
+      assert.ok(loaded.some(t=>t.address===marker && t.username==='worker-fresh'));
       await store.saveState({lastIndexComplete:1234,authCursor:{page:3}});
       const state=await store.loadState();
       assert.equal(state.lastIndexComplete,1234);

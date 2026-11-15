@@ -1,0 +1,45 @@
+name: Free RISEx wallet discovery and enrichment backfill
+
+# Independent of scale-to-zero web hosting. Uses a bounded, resumable job.
+# Discovering an account does not prove historical trading completeness.
+on:
+  schedule:
+    - cron: '43 */2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: risex-free-wallet-backfill
+  cancel-in-progress: false
+
+jobs:
+  wallets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - name: Checkout current source
+        uses: actions/checkout@v4
+      - name: Configure Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check optional Neon configuration
+        id: config
+        shell: bash
+        run: |
+          if [ -n "$DATABASE_URL" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Wallet backfill skipped: no DATABASE_URL secret configured."
+          fi
+      - name: Install npm dependencies
+        if: steps.config.outputs.enabled == 'true'
+        run: npm install --no-audit --no-fund
+      - name: Resume bounded wallet registry and enrichment backfill
+        if: steps.config.outputs.enabled == 'true'
+        run: npx tsx scripts/freeWalletBackfill.ts

@@ -95,6 +95,8 @@ export class HistoryStore {
           payload JSONB NOT NULL,
           updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
+        CREATE INDEX IF NOT EXISTS risexscan_trader_updated_at
+          ON risexscan_traders(updated_at,address);
         CREATE TABLE IF NOT EXISTS risexscan_state(
           key TEXT PRIMARY KEY,
           payload JSONB NOT NULL,
@@ -168,6 +170,29 @@ export class HistoryStore {
     return count;
   }
 
+  /** Pull only durable backfill updates since the last cursor into the live indexer.
+   * Timestamp + address keyset means equal update timestamps cannot skip rows.
+   */
+  async loadWalletBackfillUpdates(cursorTime:string,cursorAddress:string,limit=1000):
+    Promise<{records:any[];cursorTime:string;cursorAddress:string}> {
+    const empty={records:[] as any[],cursorTime,cursorAddress};
+    if(!this.ready || !this.pool)return empty;
+    const page=await this.pool.query(`
+      SELECT address,payload,updated_at::text AS updated_at_text
+      FROM risexscan_traders
+      WHERE (updated_at,address) > ($1::timestamptz,$2::text)
+        AND payload ? 'backfillWorkerAt'
+      ORDER BY updated_at ASC,address ASC
+      LIMIT $3
+    `,[cursorTime,cursorAddress,Math.max(1,Math.min(2000,limit))]);
+    const last=page.rows.at(-1);
+    return {
+      records:page.rows.map(row=>row.payload),
+      cursorTime:last?.updated_at_text??cursorTime,
+      cursorAddress:last?.address??cursorAddress,
+    };
+  }
+
   async upsertTraders<T extends {address:string}>(rows:T[]):Promise<void> {
     if(!this.ready || !this.pool || !rows.length)return;
     for(let start=0;start<rows.length;start+=250){
@@ -176,6 +201,8 @@ export class HistoryStore {
         SELECT lower(record.address),record.value
         FROM jsonb_to_recordset($1::jsonb) AS record(address TEXT, value JSONB)
         ON CONFLICT(address) DO UPDATE SET payload=EXCLUDED.payload,updated_at=now()
+        WHERE COALESCE((EXCLUDED.payload->>'lastUpdated')::bigint,0)
+          >= COALESCE((risexscan_traders.payload->>'lastUpdated')::bigint,0)
       `,[JSON.stringify(rows.slice(start,start+250).map((v)=>({address:v.address,value:v})))]);
     }
   }
