@@ -18,6 +18,7 @@ import { computeProfitabilitySummary } from './src/utils/overviewAnalytics.ts';
 import { extractWalletAddressesFromLogs, selectIndexerQueue } from './src/utils/indexerQueue.ts';
 import { buildTraderSyncDiagnostic } from './src/utils/pnlDiagnostic.ts';
 import { LIQUIDATION_ALERT_PCT, LIQUIDATION_CANDIDATE_PCT, liquidationDistancePct } from './src/utils/liquidationRisk.ts';
+import { normalizeRpcBlocks } from './src/utils/liveChain.ts';
 
 dotenv.config();
 
@@ -2113,6 +2114,41 @@ async function startServer() {
       res.json(payload);
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to load explorer data' });
+    }
+  });
+
+  // RPC tip is independent of the asynchronously indexed Blockscout feed.
+  // All visitors share a 1.5s cache; this avoids per-browser RPC hammering.
+  app.get('/api/chain/live', async (_req: Request, res: Response) => {
+    try {
+      const payload = await cachedCall('chain:rpc:live', 1500, async () => {
+        const rpc = (method: string, params: unknown[]) =>
+          fetchJson(RISE_RPC, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+          }, 4000, 0);
+        const headResponse = await rpc('eth_getBlockByNumber', ['latest', false]);
+        if (headResponse?.error || !headResponse?.result?.number) {
+          throw new Error('RISE RPC did not return a current block');
+        }
+        const head = Number.parseInt(headResponse.result.number, 16);
+        const earlier = await Promise.allSettled(
+          [1, 2, 3, 4].filter((n) => head >= n).map((n) =>
+            rpc('eth_getBlockByNumber', ['0x' + (head - n).toString(16), false])
+              .then((response) => response?.result || null)
+          )
+        );
+        return normalizeRpcBlocks([
+          headResponse.result,
+          ...earlier.map((result) => result.status === 'fulfilled' ? result.value : null),
+        ]);
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(payload);
+    } catch (err: any) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(503).json({ error: err?.message || 'RISE RPC unavailable', source: 'rpc' });
     }
   });
 
