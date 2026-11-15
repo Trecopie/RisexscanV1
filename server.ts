@@ -1779,10 +1779,19 @@ async function startServer() {
         realizedList,
         marketsList
       );
-      // Only publish aggregated cycles with one or more official settlements
-      // attributed. A cycle whose events have been paginated away is unknown,
-      // not $0 PnL.
-      const closedTrades = reconstructedCycles.filter((cycle) => cycle.officialEventCount > 0);
+      // Only publish cycles fully covered by the official settlement history.
+      // If the 10,000-event limit cuts through a position, its visible events
+      // are just a partial sum, even though the fill lifecycle itself closed.
+      const realizedEventsCapped = realizedList.length >= 10000;
+      const firstRealizedMs = realizedList.reduce((earliest: number, event: any) => {
+        const time = nsToMs(event?.timestamp);
+        return time > 0 ? Math.min(earliest, time) : earliest;
+      }, Infinity);
+      const closedTrades = reconstructedCycles.filter(
+        (cycle) =>
+          cycle.officialEventCount > 0 &&
+          (!realizedEventsCapped || nsToMs(cycle.openTime) >= firstRealizedMs - 1500)
+      );
       const unverifiedCyclesCount = reconstructedCycles.length - closedTrades.length;
 
       // Summarize metrics across official RISEx realized PnL events (falls back to closedTrades if empty)
@@ -1822,7 +1831,7 @@ async function startServer() {
             leverage: lev,
             unrealizedPnl: uPnl,
             realizedPnl: openRealizedByMarket.get(mId) ?? null,
-            realizedPnlComplete: openRealizedCompleteByMarket.get(mId) ?? false,
+            realizedPnlComplete: (openRealizedCompleteByMarket.get(mId) ?? false) && !realizedEventsCapped,
             roiPct: marginBal > 0 ? (uPnl / marginBal) * 100 : 0,
             marginBalance: marginBal,
             marginMode: p.margin_mode === 1 ? 'Isolated' : 'Cross',
@@ -1949,7 +1958,7 @@ async function startServer() {
           positions,
           closedTrades,
           tradesCapped: allTradesList.length >= 1600,
-          realizedEventsCapped: realizedList.length >= 10000,
+          realizedEventsCapped,
           unverifiedCyclesCount,
           unattributedRealizedEvents: unattributedEventCount,
           header,
