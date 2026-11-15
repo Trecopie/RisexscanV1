@@ -17,8 +17,12 @@ export function useMarketSparklines(ids:string[]):Record<string,MiniPriceSeries>
     const cached:Record<string,MiniPriceSeries>={};
     for(const id of key.split(',')){const item=cache.get(id);if(item && item.expiresAt>now)cached[id]=item.data;}
     setResult(prev=>({...prev,...cached}));
-    if(needed.length>0) {
-      fetch(`/api/markets/sparklines?ids=${needed.join(',')}`,{signal:controller.signal})
+    // Let leading visible market cards paint genuine OHLCV as each small
+    // batch resolves, rather than awaiting up to 30 upstream requests in one
+    // monolithic response. Cached percent-change meters remain the fallback.
+    for(let offset=0;offset<needed.length;offset+=6){
+      const batch=needed.slice(offset,offset+6);
+      fetch(`/api/markets/sparklines?ids=${batch.join(',')}`,{signal:controller.signal})
         .then(response=>response.ok ? response.json() : null)
         .then(data=>{
           if(controller.signal.aborted || !data?.series)return;
