@@ -1560,7 +1560,7 @@ async function startServer() {
 
         const topTraders = [...traders]
           .sort((a, b) => b.totalPnlAll - a.totalPnlAll)
-          .slice(0, 12)
+          .slice(0, 15)
           .map(({ positions: _positions, ...rest }) => ({ ...rest, positions: [] }));
 
         const profitability = computeProfitabilitySummary(traders);
