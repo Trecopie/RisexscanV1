@@ -10,7 +10,7 @@ interface History {
     observedTrades:number;note:string;
   };
   liveCollector:{connected:boolean;lastTradeAt:number|null;droppedInMemory:number};
-  dailyTrades:Array<{day:number;volumeUsd:number;reportedFeesUsd:number;tradeCount:number}>;
+  dailyTrades:Array<{day:number;volumeUsd:number;reportedFeesUsd:number|null;feeEventCount:number;tradeCount:number}>;
   oiSnapshots:Array<{time:number;openInterestUsd:number;volume24hUsd:number;marketCount:number}>;
 }
 
@@ -64,16 +64,20 @@ export const HistoricalInsights:React.FC=()=>{
   },[]);
   const parsed=useMemo(()=>{
     const daily=data?.dailyTrades??[];
-    let volume=0,fees=0;
+    let volume=0,fees=0,reportedFeeEvents=0,observedTradeEvents=0;
     const cumulativeVolume:ChartPoint[]=[],cumulativeFees:ChartPoint[]=[];
     for(const d of daily){
       volume+=d.volumeUsd;
-      fees+=d.reportedFeesUsd;
+      observedTradeEvents+=d.tradeCount;
       cumulativeVolume.push({time:d.day,value:volume});
-      cumulativeFees.push({time:d.day,value:fees});
+      if(d.reportedFeesUsd!==null && d.feeEventCount>0){
+        fees+=d.reportedFeesUsd;
+        reportedFeeEvents+=d.feeEventCount;
+        cumulativeFees.push({time:d.day,value:fees});
+      }
     }
     const oi=data?.oiSnapshots.map(d=>({time:d.time,value:d.openInterestUsd}))??[];
-    return {cumulativeVolume,cumulativeFees,oi};
+    return {cumulativeVolume,cumulativeFees,oi,reportedFeeEvents,observedTradeEvents};
   },[data]);
   return <section className="sunrise-card space-y-3 rounded-2xl p-4 sm:p-5" aria-label="Historical market observations">
     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -94,11 +98,12 @@ export const HistoricalInsights:React.FC=()=>{
     ) : <>
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
         <HistorySeries title="Recorded Open Interest" subtitle="Hourly official REST OI snapshots · USD" color="#ffb02e" values={parsed.oi}/>
-        <HistorySeries title="Cumulative Observed Volume" subtitle="Deduplicated WS executions since collector start" color="#22e0a1" values={parsed.cumulativeVolume}/>
-        <HistorySeries title="Cumulative Reported Fees" subtitle="Observed maker + taker + liquidation fees · USDC" color="#46a6ff" values={parsed.cumulativeFees}/>
+        <HistorySeries title="Cumulative Observed Volume" subtitle="Last 90 observed days · WS + REST catch-up, possibly incomplete" color="#22e0a1" values={parsed.cumulativeVolume}/>
+        <HistorySeries title="Cumulative Disclosed Fees" subtitle="Reported fees only · incomplete coverage, not total venue fees" color="#46a6ff" values={parsed.cumulativeFees}/>
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-800 pt-2 text-[10px] font-mono text-slate-400">
         <span>Observed trade events {data.coverage.observedTrades.toLocaleString()}</span>
+        <span>Fees disclosed on {parsed.reportedFeeEvents.toLocaleString()}/{parsed.observedTradeEvents.toLocaleString()} sampled trades</span>
         <span>First recorded {data.coverage.firstTradeAt ? new Date(data.coverage.firstTradeAt).toLocaleString() : 'not yet'}</span>
         <span>OI history begins {data.coverage.firstSnapshotAt ? new Date(data.coverage.firstSnapshotAt).toLocaleString() : 'not yet'}</span>
       </div>
