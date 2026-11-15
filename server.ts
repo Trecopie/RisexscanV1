@@ -128,6 +128,10 @@ interface TraderRecord {
 // In-memory store
 let marketsCache: any[] = [];
 let marketsUpdatedAt = 0;
+let lastMarketHistorySample = 0;
+let tradeFeedConnected = false;
+let lastObservedTradeAt = 0;
+let droppedTradeEvents = 0;
 let systemConfigCache: any = null;
 const tradersMap = new Map<string, TraderRecord>();
 const historyStore = new HistoryStore();
@@ -343,6 +347,23 @@ async function getMarkets(force = false): Promise<any[]> {
   if (list.length > 0) {
     marketsCache = list;
     marketsUpdatedAt = Date.now();
+    if (historyStore.ready && Date.now() - lastMarketHistorySample > 3_600_000) {
+      lastMarketHistorySample = Date.now();
+      const sampledAt = lastMarketHistorySample;
+      const samples = list.filter((m:any) => m.active !== false)
+        .map((m:any) => ({
+          marketId:String(m.market_id),
+          observedAt:sampledAt,
+          openInterestUsd:safeNum(m.open_interest)*safeNum(m.mark_price || m.last_price),
+          volume24hUsd:safeNum(m.quote_volume_24h),
+          fundingRate:safeNum(m.current_funding_rate),
+          markPrice:safeNum(m.mark_price || m.last_price),
+        }));
+      historyStore.recordMarketSamples(samples).catch((err) => {
+        lastMarketHistorySample = 0;
+        console.error('Market sample persistence warning:',err);
+      });
+    }
   }
   return marketsCache;
 }
@@ -1090,8 +1111,101 @@ async function getRecentMarketTrades() {
   });
 }
 
+/**
+ * Public RISEx trade observer for forward-looking volume/fee analytics.
+ * A disconnected/sleeping collector MUST NOT be represented as a complete
+ * trade history. Idempotent DB keys dedupe repeated WebSocket messages.
+ */
+function startObservedTradeCollector() {
+  if (!historyStore.ready || typeof WebSocket === 'undefined') return;
+  let ws: WebSocket | null = null;
+  let attempts = 0;
+  let closed = false;
+  let flushing = false;
+  let reconnect: ReturnType<typeof setTimeout> | null = null;
+  let buffer: ObservedTradeRecord[] = [];
+  const flush = async () => {
+    if (flushing || !buffer.length) return;
+    flushing = true;
+    const batch = buffer.splice(0, 1000);
+    try {
+      await historyStore.recordTrades(batch);
+    } catch (err) {
+      // Retain bounded queued data when DB is temporarily unreachable.
+      buffer = [...batch, ...buffer].slice(0, 12000);
+      console.error('Observed RISEx trade persistence warning:', err);
+    } finally {
+      flushing = false;
+    }
+  };
+  const interval = setInterval(() => { void flush(); }, 1500);
+  const connect = () => {
+    if (closed) return;
+    try {
+      const socket = new WebSocket('wss://ws.rise.trade/ws');
+      ws = socket;
+      socket.addEventListener('open', () => {
+        tradeFeedConnected = true;
+        attempts = 0;
+        socket.send(JSON.stringify({method:'subscribe',params:{channel:'trades'}}));
+      });
+      socket.addEventListener('message', (message) => {
+        try {
+          const frame = JSON.parse(String(message.data));
+          if (frame?.channel !== 'trades') return;
+          const marketId=String(frame.market_id ?? '');
+          const items=Array.isArray(frame.data) ? frame.data : frame.data?.trades ?? [frame.data];
+          for (const item of items) {
+            const id=String(item?.id ?? '');
+            const price=safeNum(item?.price), size=safeNum(item?.size);
+            if (!/^\d+$/.test(marketId) || !id || price<=0 || size<=0) continue;
+            const feeFields=[item.fee_maker,item.fee_taker,item.fee_liquidation]
+              .filter((value:unknown)=>value !== null && value !== undefined && value !== '');
+            const reportedFee=feeFields.length > 0
+              ? feeFields.reduce((sum:number,value:unknown)=>sum+safeNum(value),0) : null;
+            const ts=nsToMs(frame.timestamp ?? frame.block_timestamp ?? Date.now());
+            const timestampMs=ts > 0 ? ts : Date.now();
+            if (buffer.length >= 12000) {
+              buffer.shift();
+              droppedTradeEvents++;
+            }
+            buffer.push({
+              marketId,tradeId:id,timestampMs,
+              notionalUsd:price*size,feeUsd:reportedFee,
+            });
+            lastObservedTradeAt=Date.now();
+          }
+        } catch {
+          // Ignore malformed frames without injecting fabricated trade events.
+        }
+      });
+      socket.addEventListener('close', () => {
+        if (ws !== socket) return;
+        tradeFeedConnected = false;
+        ws = null;
+        if (!closed) reconnect = setTimeout(connect, Math.min(60000,1500*2**Math.min(6,attempts++)));
+      });
+      socket.addEventListener('error', () => { socket.close(); });
+    } catch {
+      tradeFeedConnected = false;
+      if (!closed) reconnect = setTimeout(connect, Math.min(60000,1500*2**Math.min(6,attempts++)));
+    }
+  };
+  connect();
+  const shutdown = () => {
+    closed=true;
+    if (reconnect)clearTimeout(reconnect);
+    clearInterval(interval);
+    ws?.close();
+    void flush();
+  };
+  process.once('SIGTERM',shutdown);
+  process.once('SIGINT',shutdown);
+}
+
 async function startServer() {
   await restoreIndexAtStartup();
+  startObservedTradeCollector();
 
   const app = express();
   app.set('trust proxy', 1);
@@ -1129,6 +1243,36 @@ async function startServer() {
       return;
     }
     next();
+  });
+
+  app.get('/api/analytics/history', async (_req:Request,res:Response) => {
+    try {
+      const payload=await cachedCallSWR('analytics:history',30_000,60_000,
+        () => historyStore.getHistoricalAnalytics());
+      res.json({
+        ...payload,
+        liveCollector:{connected:tradeFeedConnected,lastTradeAt:lastObservedTradeAt||null,droppedInMemory:droppedTradeEvents},
+      });
+    } catch(err:any) {
+      res.status(503).json({error:err?.message||'History analytics unavailable'});
+    }
+  });
+
+  app.get('/api/data/freshness', (_req:Request,res:Response) => {
+    res.setHeader('Cache-Control','no-store');
+    res.json({
+      fetchedAt:Date.now(),
+      marketsRestUpdatedAt:marketsUpdatedAt || null,
+      walletIndexCompletedAt:lastIndexComplete || null,
+      indexedTraders:tradersMap.size,
+      enrichedTraders:Array.from(tradersMap.values()).filter(t=>t.portfolioEnriched).length,
+      databaseConnected:historyStore.ready,
+      tradesWsConnected:tradeFeedConnected,
+      lastObservedTradeAt:lastObservedTradeAt || null,
+      tradeEventsDropped:droppedTradeEvents,
+      historicalCoverageComplete:false,
+      note:'Wallet discovery is progressive; trade/fee history covers only periods collected online.',
+    });
   });
 
   app.get('/api/health', (_req: Request, res: Response) => {
