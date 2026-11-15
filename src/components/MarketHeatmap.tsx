@@ -1,6 +1,7 @@
 import React,{useMemo,useState} from 'react';
 import {Activity,ArrowUpRight} from 'lucide-react';
 import type {RisexMarket} from '../types/risex';
+import {TokenBadge} from './TokenBadge';
 import {buildMarketHeatmap} from '../utils/marketHeatmap';
 import {formatUsd} from '../utils/format';
 
@@ -12,6 +13,7 @@ export const MarketHeatmap:React.FC<{
 }>=({markets,onSelectMarket,onAllMarkets})=>{
   const [group,setGroup]=useState<MarketGroup>('all');
   const tiles=useMemo(()=>buildMarketHeatmap(markets),[markets]);
+  const marketById=useMemo(()=>new Map(markets.map(m=>[String(m.market_id),m])),[markets]);
   const visible=useMemo(()=>tiles.filter(t=>group==='all'||t.sector===group),[tiles,group]);
   const up=visible.filter(t=>t.changePct>0).length;
   const down=visible.filter(t=>t.changePct<0).length;
@@ -59,7 +61,10 @@ export const MarketHeatmap:React.FC<{
           aria-label={`${t.symbol}, 24h move ${t.changePct.toFixed(2)} percent, 24h high-low range ${t.rangePct===null?'unknown':t.rangePct.toFixed(2)+' percent'}, volume ${formatUsd(t.volumeUsd)}`}
           title={`${t.symbol} · 24h move ${t.changePct>=0?'+':''}${t.changePct.toFixed(2)}% · High/low range ${t.rangePct===null?'n/a':t.rangePct.toFixed(2)+'%'} · 24h volume ${formatUsd(t.volumeUsd)}`}>
           <div className="flex w-full items-start justify-between gap-1">
-            <span className={`truncate font-display font-bold text-[#e8edfb] ${enlarged?'text-sm':'text-[11px]'}`}>{t.symbol}</span>
+            <span className="flex min-w-0 items-center gap-1.5">
+              <TokenBadge symbol={t.symbol} category={marketById.get(t.id)?.category} size={enlarged?23:18}/>
+              <span className={`truncate font-display font-bold text-[#e8edfb] ${enlarged?'text-sm':'text-[11px]'}`}>{t.symbol}</span>
+            </span>
             {enlarged&&<ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-slate-300 opacity-60"/>}
           </div>
           <div className="min-w-0">
