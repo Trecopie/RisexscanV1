@@ -175,6 +175,7 @@ export const TickerDetailPage: React.FC<{
     const bookCache: OrderbookCache = new Map();
     const rawBook = emptyRawBook();
     let receivedBookSnapshot = false;
+    const observedTradeIds = new Set<string>();
     bookLiveRef.current = false;
     setBookIsLive(false);
 
@@ -242,7 +243,18 @@ export const TickerDetailPage: React.FC<{
             const fresh: MarketTrade[] = frames
               .filter((frame) => frame.kind === 'trade' && frame.marketId === String(marketId))
               .map((frame) => frame.kind === 'trade' ? frame.trade : null)
-              .filter((trade): trade is MarketTrade => trade !== null);
+              .filter((trade): trade is MarketTrade => trade !== null)
+              .filter(trade => {
+                const key = `${marketId}:${trade.id}`;
+                if (observedTradeIds.has(key)) return false;
+                observedTradeIds.add(key);
+                // Keep a bounded deduplication window over reconnects.
+                if (observedTradeIds.size > 5000) {
+                  const oldest=observedTradeIds.values().next().value;
+                  if (oldest)observedTradeIds.delete(oldest);
+                }
+                return true;
+              });
             if (fresh.length > 0) {
               setLastTradeReceivedAt(Date.now());
               setTrades((prev) => mergeExplorerTradeTape(fresh, prev, 80));
