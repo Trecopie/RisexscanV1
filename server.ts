@@ -1261,7 +1261,7 @@ async function startServer() {
   // All RISEx venue market IDs are numeric. Validate before interpolating
   // identifiers into upstream URLs to avoid endpoint/path manipulation.
   app.param('marketId',(req:Request,res:Response,next,value:string)=>{
-    if(!/^\\d{1,6}$/.test(value)){
+    if(!/^\d{1,6}$/.test(value)){
       res.status(400).json({error:'Invalid market ID'});
       return;
     }
