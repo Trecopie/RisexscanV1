@@ -661,7 +661,7 @@ export const TickerDetailPage: React.FC<{
                 {topBids.map((b, idx) => {
                   const pct = (Number(b.size || 0) / maxBookSize) * 100;
                   return (
-                    <div key={idx} className="relative flex justify-between rounded px-2 py-1 overflow-hidden">
+                    <div key={idx} className="relative grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2 rounded px-2 py-1 overflow-hidden">
                       <div
                         className="pointer-events-none absolute right-0 top-0 bottom-0 bg-[#22e0a1]/14"
                         style={{ width: `${Math.min(100, pct)}%` }}
