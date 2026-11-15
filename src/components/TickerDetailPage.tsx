@@ -466,6 +466,8 @@ export const TickerDetailPage: React.FC<{
   const bestBid = Number(orderbook.bids[0]?.price || 0);
   const bestAsk = Number(orderbook.asks[0]?.price || 0);
   const spread = bestBid > 0 && bestAsk > bestBid ? bestAsk - bestBid : null;
+  const lastExecutionPrice = Number(trades[0]?.price || market?.last_price || 0);
+  const lastExecutionTime = trades[0]?.time ? nsToMs(trades[0].time) : null;
   const maxBookSize = useMemo(
     () =>
       Math.max(
@@ -575,6 +577,15 @@ export const TickerDetailPage: React.FC<{
             Across {analytics?.indexedTradersCount ?? 0} traders
           </div>
         </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1 rounded-lg border border-slate-800/60 bg-[#080d18]/70 px-3 py-2 text-[10px] font-mono text-slate-400">
+        <span>Last executed <strong className="text-[#e8edfb]">{lastExecutionPrice>0 ? formatPrice(lastExecutionPrice) : '—'}</strong></span>
+        <span>{lastExecutionTime ? `Last fill ${new Date(lastExecutionTime).toLocaleTimeString()}` : 'Awaiting trade history'}</span>
+        <span className={lastTradeReceivedAt ? 'text-[#22e0a1]' : 'text-slate-500'}>
+          {lastTradeReceivedAt ? `Trade WS received ${new Date(lastTradeReceivedAt).toLocaleTimeString()}` : 'Trade WS awaiting first fill'}
+        </span>
+        <span>Chart candles = executed trades; mark = RISEx oracle. The two prices may differ.</span>
       </div>
 
       {/* Chart + Orderbook / Trades (stretched full-height row) */}
