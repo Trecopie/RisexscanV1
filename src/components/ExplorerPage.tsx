@@ -58,7 +58,9 @@ export const ExplorerPage: React.FC<{
   const txAbortRef = React.useRef<AbortController | null>(null);
 
   const loadExplorer = async () => {
-    abortRef.current?.abort();
+    // Keep an in-flight Blockscout request alive. Aborting it on each interval
+    // made slow explorer responses appear permanently frozen.
+    if (abortRef.current && !abortRef.current.signal.aborted) return;
     const controller = new AbortController();
     abortRef.current = controller;
     const safeJson = async (url: string) => {
@@ -94,6 +96,7 @@ export const ExplorerPage: React.FC<{
       // ignore
     } finally {
       if (!controller.signal.aborted) setLoading(false);
+      if (abortRef.current === controller) abortRef.current = null;
     }
   };
 
