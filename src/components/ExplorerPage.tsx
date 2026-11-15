@@ -140,7 +140,9 @@ export const ExplorerPage: React.FC<{
     }
   }, [initialTxHash]);
 
-  const liveMarkets = streamedMarkets.length > 0 ? streamedMarkets : markets;
+  const liveMarkets = connectionState === 'connected' && streamedMarkets.length > 0
+    ? streamedMarkets
+    : (markets.length > 0 ? markets : streamedMarkets);
   const atRisk = useMemo(() => deriveLiveLiquidationRisk(riskCandidates, liveMarkets), [riskCandidates, liveMarkets]);
   const tradeTape = useMemo(() => mergeExplorerTradeTape(socketTrades, recentTrades), [socketTrades, recentTrades]);
   const indexedHead = Number(blocks[0]?.height || 0);
