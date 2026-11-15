@@ -69,8 +69,8 @@ export const TickerDetailPage: React.FC<{
   const [allMarkets, setAllMarkets] = useState<RisexMarket[]>([]);
   // Keep data attached to the market/resolution it actually belongs to.
   // Changing timeframes must never briefly render 1H bars as 1m candles.
-  const [candleState,setCandleState] = useState<{marketId:string;resolution:string;rows:MarketCandle[]}>({
-    marketId:'',resolution:'',rows:[],
+  const [candleState,setCandleState] = useState<{marketId:string;resolution:string;rows:MarketCandle[];restRevision:number}>({
+    marketId:'',resolution:'',rows:[],restRevision:0,
   });
   const [resolution, setResolution] = useState('1H');
   const candles = candleState.marketId === marketId && candleState.resolution === resolution
@@ -155,7 +155,7 @@ export const TickerDetailPage: React.FC<{
             // newer live last execution must not be overwritten by an older
             // REST snapshot assembled before that trade arrived.
             if (previous.marketId !== marketId || previous.resolution !== resolution || !previous.rows.length) {
-              return {marketId,resolution,rows:d.candles};
+              return {marketId,resolution,rows:d.candles,restRevision:previous.restRevision+1};
             }
             const rest=normalizeCandles(d.candles);
             const live=normalizeCandles(previous.rows);
@@ -175,7 +175,7 @@ export const TickerDetailPage: React.FC<{
               });
             }else merged.push(latestRest);
             merged.push(...laterLive.filter(bar=>bar.time>lastRestTime));
-            return {marketId,resolution,rows:merged.map(bar=>({
+            return {marketId,resolution,restRevision:previous.restRevision+1,rows:merged.map(bar=>({
               time:bar.time*1000,open:bar.open,high:bar.high,
               low:bar.low,close:bar.close,volume:bar.volume,
             }))};
@@ -563,6 +563,7 @@ export const TickerDetailPage: React.FC<{
             marketId={marketId}
             symbol={market?.display_name}
             candles={candles}
+            historyRevision={candleState.restRevision}
             resolution={resolution}
             onResolutionChange={setResolution}
             liveMarkPrice={markPrice}
