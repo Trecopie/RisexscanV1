@@ -1218,6 +1218,40 @@ async function startServer() {
     next();
   });
 
+  // Bounded in-memory API latency telemetry. No wallet addresses or search
+  // query strings are stored; Express route patterns group dynamic IDs.
+  const apiPerf = new Map<string,{durations:number[];requests:number;errors:number}>();
+  app.use('/api', (req,res,next) => {
+    const start=performance.now();
+    res.once('finish', () => {
+      const path = String(req.route?.path || req.path);
+      if (path === '/monitoring/performance') return;
+      const entry=apiPerf.get(path) || {durations:[],requests:0,errors:0};
+      entry.requests++;
+      if (res.statusCode >= 400) entry.errors++;
+      entry.durations.push(Math.round(performance.now()-start));
+      if (entry.durations.length > 300) entry.durations.shift();
+      if (apiPerf.size >= 70 && !apiPerf.has(path)) apiPerf.delete(apiPerf.keys().next().value!);
+      apiPerf.set(path,entry);
+    });
+    next();
+  });
+  app.get('/api/monitoring/performance', (_req,res) => {
+    const percentile = (rows:number[], pct:number) =>
+      rows.length ? rows[Math.floor((rows.length-1)*pct)] : 0;
+    const metrics=[...apiPerf.entries()].map(([route,v]) => {
+      const ordered=[...v.durations].sort((a,b)=>a-b);
+      return {
+        route, requests:v.requests, errorRatePct: +(v.errors/v.requests*100).toFixed(1),
+        p50Ms:percentile(ordered,0.50),p95Ms:percentile(ordered,0.95),
+        maxMs:ordered[ordered.length-1] || 0,
+        sampleSize:ordered.length,
+      };
+    }).sort((a,b)=>b.p95Ms-a.p95Ms);
+    res.setHeader('Cache-Control','no-store');
+    res.json({fetchedAt:Date.now(),uptimeSec:Math.round(process.uptime()),metrics});
+  });
+
   // Lightweight sliding-window per-IP rate limiter for /api/*
   const ipHits = new Map<string, { count: number; resetAt: number }>();
   setInterval(() => {
