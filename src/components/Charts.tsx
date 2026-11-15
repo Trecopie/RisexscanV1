@@ -596,13 +596,14 @@ export const MarketMoveMeter: React.FC<{
 }> = ({ changePct, width = 76, height = 24 }) => {
   const pct = Number.isFinite(changePct) ? changePct : 0;
   const center = width / 2;
-  const range = Math.max(10, Math.abs(pct));
+  // A fixed scale is comparable across assets; the meter clips at ±25%.
+  const range = 25;
   const extent = Math.min(center - 3, (Math.abs(pct) / range) * (center - 3));
   const positive = pct >= 0;
   const color = positive ? '#22e0a1' : '#ff4d6d';
   const barWidth = pct === 0 ? 0 : Math.max(1.4, extent);
   const y = Math.max(2, (height - 7) / 2);
-  const label = `24h change ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%. This is a change meter, not price history.`;
+  const label = `24h change ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%. Meter scale ±25%, clipped beyond that. Not historical price data.`;
 
   return (
     <svg
