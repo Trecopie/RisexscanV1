@@ -1041,14 +1041,18 @@ export const OverviewPage: React.FC<{
         {/* Live Taker Orderflow Ratio */}
         <div className="sunrise-card rounded-2xl p-4 space-y-2.5">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-display font-bold text-[#e8edfb]">Live Taker Flow (Tape)</span>
+            <span className="text-xs font-display font-bold text-[#e8edfb]">Recent Taker Flow (last {liveTrades.length} fills)</span>
             <span className="font-mono text-xs font-bold text-[#46a6ff]">
-              {takerFlow.buySharePct.toFixed(1)}% Buy
+              {takerFlow.totalUsd > 0 ? `${takerFlow.buySharePct.toFixed(1)}% Buy` : '—'}
             </span>
           </div>
           <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-slate-800">
-            <div className="bg-[#22e0a1]" style={{ width: `${takerFlow.buySharePct}%` }} />
-            <div className="bg-[#ff4d6d]" style={{ width: `${takerFlow.sellSharePct}%` }} />
+            {takerFlow.totalUsd > 0 && (
+              <>
+                <div className="bg-[#22e0a1]" style={{ width: `${takerFlow.buySharePct}%` }} />
+                <div className="bg-[#ff4d6d]" style={{ width: `${takerFlow.sellSharePct}%` }} />
+              </>
+            )}
           </div>
           <div className="flex items-center justify-between font-mono text-[11px] tabular-nums text-slate-400">
             <span className="text-[#22e0a1]">
