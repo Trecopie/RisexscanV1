@@ -39,7 +39,6 @@ import {
   buildMarketDashboard,
   buildMarketSectors,
   buildOpenInterestLeaders,
-  buildVolumeHeatmap,
   cleanBaseSymbol,
   computeTakerFlow,
   type DashboardSectorFilter,
@@ -48,6 +47,7 @@ import type { NavTab } from './Navbar';
 import { MarketMiniChart } from './MarketMiniChart';
 import { useMarketSparklines } from '../hooks/useMarketSparklines';
 import { HistoricalInsights } from './HistoricalInsights';
+import { MarketHeatmap } from './MarketHeatmap';
 import { RisexSymbol } from './RisexSymbol';
 import { TokenBadge, TraderAvatar } from './TraderAvatar';
 import { useMarketStream } from '../context/MarketWebSocketContext';
@@ -419,7 +419,7 @@ export const OverviewPage: React.FC<{
   const sectorData = useMemo(() => buildMarketSectors(markets), [markets]);
   const oiLeaders = useMemo(() => buildOpenInterestLeaders(markets, 10), [markets]);
   const fundingHeatmap = useMemo(() => buildFundingHeatmap(markets, 20), [markets]);
-  const volumeHeatmap = useMemo(() => buildVolumeHeatmap(markets, 16), [markets]);
+
   const takerFlow = useMemo(() => computeTakerFlow(liveTrades), [liveTrades]);
 
   const dashboardData = useMemo(
@@ -1185,59 +1185,7 @@ export const OverviewPage: React.FC<{
         </div>
       </section>
 
-      {/* Market Volume Heatmap Grid */}
-      <section className="sunrise-card rounded-2xl p-4 sm:p-5 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Activity className="h-4 w-4 text-[#46a6ff]" />
-            <h2 className="font-display text-base font-bold text-[#e8edfb]">
-              24h Market Volume Heatmap
-            </h2>
-          </div>
-          <button
-            type="button"
-            onClick={() => onNavigateTab('markets')}
-            className="text-xs font-mono text-[#ffb02e] hover:underline"
-          >
-            Full Screener →
-          </button>
-        </div>
-
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
-          {volumeHeatmap.map((item, idx) => {
-            const up = item.changePct >= 0;
-            return (
-              <button
-                key={item.marketId}
-                type="button"
-                onClick={() => onSelectMarket(item.marketId)}
-                className={`rounded-xl border p-2.5 text-left transition-all hover:border-[#ffb02e]/55 ${
-                  up
-                    ? 'border-[#22e0a1]/25 bg-gradient-to-b from-[#22e0a1]/[0.08] to-[#080d18]'
-                    : 'border-[#ff4d6d]/25 bg-gradient-to-b from-[#ff4d6d]/[0.08] to-[#080d18]'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-1">
-                  <TokenBadge symbol={item.symbol} category={item.category} size={18} />
-                  <span className="font-mono text-[10px] text-slate-500">#{idx + 1}</span>
-                </div>
-                <div className="mt-1.5 font-display text-xs font-bold text-[#e8edfb] truncate">
-                  {item.symbol}
-                </div>
-                <div className="mt-0.5 font-mono text-xs font-bold tabular-nums text-[#ffb02e]">
-                  {formatUsd(item.volume24h, true)}
-                </div>
-                <div className="mt-0.5 flex items-center justify-between font-mono text-[10px] tabular-nums">
-                  <span className={up ? 'text-[#22e0a1]' : 'text-[#ff4d6d]'}>
-                    {formatPct(item.changePct)}
-                  </span>
-                  <span className="text-slate-500">{item.sharePct.toFixed(1)}%</span>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </section>
+      <MarketHeatmap markets={markets} onSelectMarket={onSelectMarket} onAllMarkets={() => onNavigateTab('markets')} />
 
       {/* Persistent Watchlist Strip */}
       <section className="space-y-2.5">
