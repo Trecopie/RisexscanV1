@@ -28,6 +28,8 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm run lint
       - run: npx tsx --test src/utils/*.test.ts src/components/*.test.tsx
+      - name: Verify zero-cost sampler safely skips without DB secret
+        run: env -u DATABASE_URL npx tsx scripts/freeHistorySampler.ts
       - name: Verify PostgreSQL live storage and historical analytics
         env:
           TEST_DATABASE_URL: postgresql://risexscan:local_ci_password@localhost:5432/risexscan_test
