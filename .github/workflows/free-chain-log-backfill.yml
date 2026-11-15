@@ -3,7 +3,7 @@ name: Free RISE contract event history backfill
 # Raw chain logs are not decoded trades/PnL or claims of full-history coverage.
 on:
   schedule:
-    - cron: '17 */3 * * *'
+    - cron: '17 * * * *' # hourly, bounded 5-minute free-runner job; safe under existing Neon storage guard
   workflow_dispatch:
 
 permissions:
