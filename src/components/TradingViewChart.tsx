@@ -246,10 +246,11 @@ export const TradingViewChart: React.FC<{
   marketId: string;
   symbol?: string;
   candles: MarketCandle[];
+  historyRevision?: number;
   resolution: string;
   onResolutionChange: (res: string) => void;
   liveMarkPrice?: number;
-}> = ({ marketId, symbol, candles, resolution, onResolutionChange, liveMarkPrice }) => {
+}> = ({ marketId, symbol, candles, historyRevision = 0, resolution, onResolutionChange, liveMarkPrice }) => {
   const [chartMode, setChartMode] = useState<'candle' | 'area'>('candle');
   const [scaleMode, setScaleMode] = useState<'normal' | 'log'>('normal');
   const [menuOpen, setMenuOpen] = useState(false);
@@ -279,6 +280,7 @@ export const TradingViewChart: React.FC<{
   const mainSeriesRef = useRef<ISeriesApi<any> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<any> | null>(null);
   const indicatorSeriesRef = useRef<Array<{key:string;series:ISeriesApi<any>}>>([]);
+  const lastHistoryRevisionRef = useRef<number>(-1);
   const lastDatasetSigRef = useRef<string>('');
 
   // Persist indicator settings
@@ -380,6 +382,7 @@ export const TradingViewChart: React.FC<{
     const container = chartContainerRef.current;
     if (!container || bars.length === 0) return;
     indicatorSeriesRef.current = [];
+    lastHistoryRevisionRef.current = -1;
 
     const initW = Math.max(280, container.clientWidth || 680);
     const initH = Math.max(420, container.clientHeight || 520);
@@ -676,8 +679,19 @@ export const TradingViewChart: React.FC<{
   useEffect(() => {
     if (!mainSeriesRef.current || bars.length === 0) return;
     const last = bars[bars.length - 1];
+    const fullHistorySync = lastHistoryRevisionRef.current !== historyRevision;
     try {
-      if (chartMode === 'candle') {
+      if (fullHistorySync) {
+        // A REST reconciliation can correct earlier candles, not only the last
+        // one. Redraw the series in place, preserving chart viewport/drawings.
+        if (chartMode === 'candle') {
+          mainSeriesRef.current.setData(bars.map(bar=>({
+            time:bar.time as Time,open:bar.open,high:bar.high,low:bar.low,close:bar.close,
+          })));
+        } else {
+          mainSeriesRef.current.setData(bars.map(bar=>({time:bar.time as Time,value:bar.close})));
+        }
+      } else if (chartMode === 'candle') {
         mainSeriesRef.current.update({
           time: last.time as Time,
           open: last.open,
@@ -692,12 +706,21 @@ export const TradingViewChart: React.FC<{
         });
       }
       if (volumeSeriesRef.current && settings.volume.enabled && settings.volume.visible) {
-        volumeSeriesRef.current.update({
-          time: last.time as Time,
-          value: last.volume,
-          color: last.close >= last.open ? 'rgba(34, 224, 161, 0.28)' : 'rgba(255, 77, 109, 0.28)',
-        });
+        const colorFor = (bar:NormalizedBar) =>
+          bar.close >= bar.open ? 'rgba(34, 224, 161, 0.28)' : 'rgba(255, 77, 109, 0.28)';
+        if (fullHistorySync) {
+          volumeSeriesRef.current.setData(bars.map(bar=>({
+            time:bar.time as Time,value:bar.volume,color:colorFor(bar),
+          })));
+        } else {
+          volumeSeriesRef.current.update({
+            time: last.time as Time,
+            value: last.volume,
+            color: colorFor(last),
+          });
+        }
       }
+      if (fullHistorySync) lastHistoryRevisionRef.current = historyRevision;
     } catch {
       // ignore out-of-order edge case
     }
@@ -721,16 +744,18 @@ export const TradingViewChart: React.FC<{
       const rows = sources[key];
       if (!rows?.length) continue;
       const lastPoint = rows[rows.length - 1];
-      if (lastPoint.time !== last.time) continue;
+      if (!fullHistorySync && lastPoint.time !== last.time) continue;
       try {
-        series.update(lastPoint.value === undefined
-          ? {time:lastPoint.time as Time}
-          : {time:lastPoint.time as Time,value:lastPoint.value,...(lastPoint.color ? {color:lastPoint.color} : {})});
+        const renderRow=(point:typeof lastPoint) => point.value === undefined
+          ? {time:point.time as Time}
+          : {time:point.time as Time,value:point.value,...(point.color ? {color:point.color} : {})};
+        if (fullHistorySync)series.setData(rows.map(renderRow));
+        else series.update(renderRow(lastPoint));
       } catch {
         // Out-of-order older indicators never force a full chart rebuild.
       }
     }
-  }, [bars, indicatorData, chartMode, settings.volume.enabled, settings.volume.visible]);
+  }, [bars, historyRevision, indicatorData, chartMode, settings.volume.enabled, settings.volume.visible]);
 
   // Coordinate conversions for SVG drawing overlay
   const resSec = getResolutionSeconds(resolution);
