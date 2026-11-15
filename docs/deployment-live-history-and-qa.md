@@ -62,3 +62,12 @@ After deployment, compare the **same market, same clock time** in RISEx and RISE
 - Book checksums detect corruption but cannot eliminate external feed latency. RISEx documents orderbook updates can be throttled and occasionally skipped during chain catch-up.
 - Not all symbols have verifiable public logos. Unknown symbols retain RISExScan's custom vector emblem, not arbitrary third-party lookalikes.
 - Persistent store and UI are optional; a missing `DATABASE_URL` leaves live market data functioning, but no durable historical charts can be promised.
+
+## Final correctness refinements from PR review
+
+- Newly opened OHLCV candles start at **the first actual execution price** in their interval. Never substitute the previous bar's closing price, which fabricates OHLC when the first fill gaps from the prior bar.
+- Ticker WebSocket subscriptions persist across timeframe changes; the current timeframe is applied via a mutable ref, and REST candles reconcile about every 20 seconds or immediately after a WebSocket reconnection. After a REST history repair, Lightweight Charts refreshes full OHLCV and indicator series **in place** so pan/zoom and drawings are preserved.
+- The active ticker order book shows price, size, **cumulative USD depth**, bid/ask spread and 10/20/30/50 adjustable levels. RISEx update frames require a valid raw-wei CRC32; a snapshot can legitimately omit checksum. On mismatch, RISExScan re-subscribes and uses REST fallback while the book resynchronizes.
+- Ticker header explicitly distinguishes the latest executed trade from the official oracle mark. Chart candles follow executions, whereas the mark is an oracle calculation; a small difference is not necessarily stream lag.
+- Genuine OHLCV mini-chart requests are split into six-market batches and render incrementally rather than blocking all thirty symbols behind one slow response.
+- GitHub Actions provisions a temporary PostgreSQL 16 service and verifies trader rows, persistent crawl cursor state, deduplicated trade observations, hourly OI, and fully exited indexed cohorts with real SQL queries. This checks database plumbing, **not** completeness of upstream historical records.
