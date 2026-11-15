@@ -31,7 +31,7 @@ export const MarketHeatmap:React.FC<{
         <div role="group" aria-label="Heatmap markets" className="flex rounded-lg border border-slate-800 bg-[#070b14] p-0.5">
           {([['all','All'],['crypto','Crypto'],['rwa','RWA']] as const).map(([key,label])=>
             <button key={key} type="button" aria-pressed={group===key} onClick={()=>setGroup(key)}
-              className={\`rounded-md px-2.5 py-1 text-[11px] font-mono \${group===key?'bg-[#ffb02e] font-semibold text-[#1d1205]':'text-slate-400 hover:text-white'}\`}>{label}</button>)}
+              className={`rounded-md px-2.5 py-1 text-[11px] font-mono ${group===key?'bg-[#ffb02e] font-semibold text-[#1d1205]':'text-slate-400 hover:text-white'}`}>{label}</button>)}
         </div>
         <button onClick={onAllMarkets} type="button" className="inline-flex items-center gap-1 text-xs font-mono text-[#ffb02e] hover:underline">
           Screener <ArrowUpRight className="h-3.5 w-3.5"/>
@@ -52,18 +52,18 @@ export const MarketHeatmap:React.FC<{
         const alpha=.13+.48*t.intensity;
         const enlarged=(group==='all'&&i<3);
         return <button key={t.id} role="listitem" type="button"
-          className={\`market-heat-tile group relative flex min-w-0 flex-col justify-between overflow-hidden rounded-lg border p-2 text-left shadow-sm transition-all duration-200 hover:z-10 hover:scale-[1.025] hover:ring-1 hover:ring-[#ffb02e]/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#ffb02e] \${enlarged?'sm:col-span-2 sm:row-span-2':''}\`}
-          style={{backgroundColor:\`rgba(\${rgb},\${alpha.toFixed(3)})\`,
-            borderColor:\`rgba(\${rgb},\${(.29+.4*t.intensity).toFixed(3)})\`}}
+          className={`market-heat-tile group relative flex min-w-0 flex-col justify-between overflow-hidden rounded-lg border p-2 text-left shadow-sm transition-all duration-200 hover:z-10 hover:scale-[1.025] hover:ring-1 hover:ring-[#ffb02e]/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#ffb02e] ${enlarged?'sm:col-span-2 sm:row-span-2':''}`}
+          style={{backgroundColor:`rgba(${rgb},${alpha.toFixed(3)})`,
+            borderColor:`rgba(${rgb},${(.29+.4*t.intensity).toFixed(3)})`}}
           onClick={()=>onSelectMarket(t.id)}
-          aria-label={\`\${t.symbol}, 24h move \${t.changePct.toFixed(2)} percent, 24h high-low range \${t.rangePct===null?'unknown':t.rangePct.toFixed(2)+' percent'}, volume \${formatUsd(t.volumeUsd)}\`}
-          title={\`\${t.symbol} · 24h move \${t.changePct>=0?'+':''}\${t.changePct.toFixed(2)}% · High/low range \${t.rangePct===null?'n/a':t.rangePct.toFixed(2)+'%'} · 24h volume \${formatUsd(t.volumeUsd)}\`}>
+          aria-label={`${t.symbol}, 24h move ${t.changePct.toFixed(2)} percent, 24h high-low range ${t.rangePct===null?'unknown':t.rangePct.toFixed(2)+' percent'}, volume ${formatUsd(t.volumeUsd)}`}
+          title={`${t.symbol} · 24h move ${t.changePct>=0?'+':''}${t.changePct.toFixed(2)}% · High/low range ${t.rangePct===null?'n/a':t.rangePct.toFixed(2)+'%'} · 24h volume ${formatUsd(t.volumeUsd)}`}>
           <div className="flex w-full items-start justify-between gap-1">
-            <span className={\`truncate font-display font-bold text-[#e8edfb] \${enlarged?'text-sm':'text-[11px]'}\`}>{t.symbol}</span>
+            <span className={`truncate font-display font-bold text-[#e8edfb] ${enlarged?'text-sm':'text-[11px]'}`}>{t.symbol}</span>
             {enlarged&&<ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-slate-300 opacity-60"/>}
           </div>
           <div className="min-w-0">
-            <span className={\`block font-mono font-bold tabular-nums \${enlarged?'text-base':'text-xs'} \${positive?'text-[#62ffcc]':negative?'text-[#ff8ea2]':'text-slate-200'}\`}>
+            <span className={`block font-mono font-bold tabular-nums ${enlarged?'text-base':'text-xs'} ${positive?'text-[#62ffcc]':negative?'text-[#ff8ea2]':'text-slate-200'}`}>
               {t.changePct>=0?'+':''}{t.changePct.toFixed(2)}%
             </span>
             <div className="flex items-end justify-between gap-1 font-mono text-[10px] text-slate-200">
