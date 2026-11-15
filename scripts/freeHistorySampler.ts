@@ -54,6 +54,11 @@ async function main():Promise<void>{
       .filter((market):market is NonNullable<typeof market>=>market!==null);
     if(samples.length>0)await store.recordMarketSamples(samples);
     console.log(`Market samples: ${samples.length} of ${selected.length} active markets`);
+    const beforeTradeStorage=await store.storageStatus(true);
+    if (beforeTradeStorage.writeLimited) {
+      console.warn('Trade catchup paused by free database storage guard; recorded market snapshots only.');
+      return;
+    }
 
     let cursor=0,success=0,failed=0,records=0,empty=0;
     const worker=async()=>{
