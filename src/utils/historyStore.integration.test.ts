@@ -46,6 +46,22 @@ test('PostgreSQL round trip: durable traders, state, unique trades, OI and cohor
       const changes=await store.getPositionChanges();
       assert.ok(changes.changes.some(v=>v.marketId===fakeId && v.cohort==='whale' && Math.abs(v.deltaNetUsd)<1e-9));
       assert.ok(changes.changes.some(v=>v.marketId===fakeId && v.cohort==='shark' && v.deltaNetUsd===-25));
+      // Verify the default free-tier budget cannot be bypassed by bulk fills.
+      const previousLimit=process.env.RISEX_DB_SOFT_LIMIT_BYTES;
+      process.env.RISEX_DB_SOFT_LIMIT_BYTES='1';
+      const guarded=new HistoryStore(testUrl);
+      try{
+        await guarded.initialize();
+        assert.equal((await guarded.storageStatus(true)).writeLimited,true);
+        await assert.rejects(
+          ()=>guarded.recordTrades([makeTrade('ci-test-over-quota')]),
+          /soft storage limit reached/
+        );
+      }finally{
+        await guarded.close();
+        if(previousLimit===undefined)delete process.env.RISEX_DB_SOFT_LIMIT_BYTES;
+        else process.env.RISEX_DB_SOFT_LIMIT_BYTES=previousLimit;
+      }
     } finally {
       await store.close();
     }
