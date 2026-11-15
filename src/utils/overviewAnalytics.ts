@@ -99,6 +99,10 @@ export interface MarketDashboardData {
   marketCount: number;
   totalVolume24h: number;
   totalOpenInterestUsd: number;
+  advancers: number;
+  decliners: number;
+  unchanged: number;
+  advancersPct: number;
   topVolume: MarketDashboardEntry[];
   gainers: MarketDashboardEntry[];
   losers: MarketDashboardEntry[];
@@ -185,6 +189,9 @@ export function buildMarketSectors(markets: RisexMarket[]): {
 
   let totalVolume24h = 0;
   let totalOpenInterestUsd = 0;
+  let advancers = 0;
+  let decliners = 0;
+  let unchanged = 0;
 
   for (const m of markets) {
     if (m.active === false) continue;
@@ -431,6 +438,9 @@ export function buildMarketDashboard(
     const volume24h = toNum(m.quote_volume_24h);
     const openInterestUsd = toNum(m.open_interest) * markPrice;
     const changePct = calcMarketChangePct(markPrice, m.change_24h);
+    if (changePct > 0) advancers++;
+    else if (changePct < 0) decliners++;
+    else unchanged++;
     const fundingAprPct = toNum(m.current_funding_rate) * 24 * 365 * 100;
 
     totalVolume24h += volume24h;
@@ -470,6 +480,10 @@ export function buildMarketDashboard(
     marketCount: entries.length,
     totalVolume24h,
     totalOpenInterestUsd,
+    advancers,
+    decliners,
+    unchanged,
+    advancersPct: entries.length > 0 ? advancers / entries.length * 100 : 0,
     topVolume,
     gainers,
     losers,
