@@ -86,6 +86,7 @@ export const TickerDetailPage: React.FC<{
   const [fundingHistory, setFundingHistory] = useState<FundingRateRecord[]>([]);
   const [bookTab, setBookTab] = useState<'book' | 'trades'>('book');
   const [bookIsLive, setBookIsLive] = useState(false);
+  const [bookChecksumVerified,setBookChecksumVerified] = useState(false);
   const [bookResyncs, setBookResyncs] = useState(0);
   const [bookUpdatedAt, setBookUpdatedAt] = useState<number | null>(null);
   const [lastTradeReceivedAt, setLastTradeReceivedAt] = useState<number | null>(null);
@@ -228,6 +229,7 @@ export const TickerDetailPage: React.FC<{
     const observedTradeIds = new Set<string>();
     bookLiveRef.current = false;
     setBookIsLive(false);
+    setBookChecksumVerified(false);
 
     const flushBook = () => {
       bookUpdateTimer = null;
@@ -273,7 +275,10 @@ export const TickerDetailPage: React.FC<{
               // A delta without a full initial book cannot be displayed as a
               // complete L2 snapshot, even if it updates both sides.
               if (!receivedBookSnapshot && !frame.isSnapshot) continue;
-              if (frame.isSnapshot) receivedBookSnapshot = true;
+              if (frame.isSnapshot) {
+                receivedBookSnapshot = true;
+                setBookChecksumVerified(false);
+              }
               // Validate raw wei strings, not rounded JavaScript number price keys.
               if (!exactBookFrame || exactBookFrame.marketId !== String(marketId)) continue;
               applyRawBookFrame(rawBook, exactBookFrame);
@@ -286,12 +291,14 @@ export const TickerDetailPage: React.FC<{
                 if (bookUpdateTimer) { clearTimeout(bookUpdateTimer); bookUpdateTimer = null; }
                 bookLiveRef.current = false;
                 setBookIsLive(false);
+                setBookChecksumVerified(false);
                 setBookResyncs((count) => count + 1);
                 // RISEx specifies unsubscribe -> subscribe after a checksum mismatch.
                 socket.send(JSON.stringify({method:'unsubscribe',params:{channel:'orderbook',market_ids:[Number(marketId)]}}));
                 socket.send(JSON.stringify({method:'subscribe',params:{channel:'orderbook',market_ids:[Number(marketId)]}}));
                 continue;
               }
+              if (!exactBookFrame.isSnapshot) setBookChecksumVerified(true);
               if (!bookUpdateTimer) bookUpdateTimer = setTimeout(flushBook, 120);
             }
             const fresh: MarketTrade[] = frames
@@ -351,6 +358,7 @@ export const TickerDetailPage: React.FC<{
           bookLiveRef.current = false;
           if (disposed) return;
           setBookIsLive(false);
+          setBookChecksumVerified(false);
           if (document.visibilityState === 'hidden') return;
           // Immediately fall back to a fresh REST book rather than displaying
           // the last received WS book throughout the reconnect backoff.
@@ -612,7 +620,7 @@ export const TickerDetailPage: React.FC<{
                 bookTab === 'book' ? 'bg-[#131c31] text-[#ffb02e]' : 'text-slate-400'
               }`}
             >
-              L2 Orderbook <span className={bookIsLive ? 'text-[#22e0a1]' : 'text-[#ffb02e]'} title={bookIsLive ? 'Checksummed WebSocket L2' : 'REST fallback / reconnecting'}>●</span>
+              L2 Orderbook <span className={bookIsLive ? 'text-[#22e0a1]' : 'text-[#ffb02e]'} title={bookIsLive ? (bookChecksumVerified ? 'CRC32 verified WebSocket L2' : 'Live WS snapshot; awaiting verified delta') : 'REST fallback / reconnecting'}>●</span>
             </button>
             <button
               type="button"
@@ -629,7 +637,7 @@ export const TickerDetailPage: React.FC<{
             <div className="flex-1 flex flex-col justify-between text-xs font-mono tabular-nums">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400">
                 <span className={bookIsLive ? 'text-[#22e0a1]' : 'text-[#ffb02e]'}>
-                  {bookIsLive ? '● Checksummed WS L2' : '○ REST snapshot / reconnecting'}
+                  {bookIsLive ? (bookChecksumVerified ? '● CRC32 verified WS L2' : '● WS snapshot · awaiting CRC update') : '○ REST snapshot / reconnecting'}
                 </span>
                 <select
                   value={depthRows}
