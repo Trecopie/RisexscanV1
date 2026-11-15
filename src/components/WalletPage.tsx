@@ -28,6 +28,7 @@ import {
   shortAddress,
 } from '../utils/format';
 import { normalizeRealizedSide, summarizeRealizedEvents } from '../utils/tradeLifecycle';
+import { aggregateRealizedByMarketSide } from '../utils/realizedAggregation';
 import { AreaPerformanceChart, DailyBars30D, PnlCalendarHeatmap } from './Charts';
 import { CopyBtn, LiqDistanceBadge, TokenBadge, TraderAvatar } from './TraderAvatar';
 
@@ -59,7 +60,7 @@ export const WalletPage: React.FC<{
   const [activeTab, setActiveTab] = useState<WalletTab>('positions');
 
   // Realized PnL tab filters & sorting
-  const [rzViewMode, setRzViewMode] = useState<'events' | 'cycles'>('cycles');
+  const [rzViewMode, setRzViewMode] = useState<'market' | 'events' | 'cycles'>('market');
   const [rzTimeframe, setRzTimeframe] = useState<TimeframeKey>('all');
   const [rzMarketFilter, setRzMarketFilter] = useState<string>('ALL');
   const [rzSideFilter, setRzSideFilter] = useState<'ALL' | 'LONG' | 'SHORT'>('ALL');
@@ -248,8 +249,13 @@ export const WalletPage: React.FC<{
     });
   }, [allRealizedRows, rzTimeframe, rzMarketFilter, rzSideFilter, rzOutcomeFilter]);
 
+  const displayedRealized = useMemo(
+    () => rzViewMode === 'market' ? aggregateRealizedByMarketSide(filteredRealized) : filteredRealized,
+    [rzViewMode, filteredRealized]
+  );
+
   const realizedStats = useMemo(() => {
-    const s = summarizeRealizedEvents(filteredRealized);
+    const s = summarizeRealizedEvents(displayedRealized);
     return {
       count: s.totalEvents,
       netPnl: s.netRealizedPnl,
@@ -263,7 +269,7 @@ export const WalletPage: React.FC<{
       bestClose: s.bestClose,
       worstClose: s.worstClose,
     };
-  }, [filteredRealized]);
+  }, [displayedRealized]);
 
   const cumulativeRealizedCurve = useMemo(() => {
     const asc = [...filteredRealized].sort((a, b) => nsToMs(a.closeTime) - nsToMs(b.closeTime));
@@ -289,7 +295,7 @@ export const WalletPage: React.FC<{
   }, [filteredRealized]);
 
   const sortedRealizedRows = useMemo(() => {
-    const list = [...filteredRealized];
+    const list = [...displayedRealized];
     list.sort((a, b) => {
       let av = 0;
       let bv = 0;
@@ -309,7 +315,7 @@ export const WalletPage: React.FC<{
       return rzSortDesc ? bv - av : av - bv;
     });
     return list;
-  }, [filteredRealized, rzSortBy, rzSortDesc]);
+  }, [displayedRealized, rzSortBy, rzSortDesc]);
 
   const toggleRzSort = (key: RealizedSortKey) => {
     if (rzSortBy === key) setRzSortDesc((d) => !d);
@@ -919,8 +925,16 @@ export const WalletPage: React.FC<{
               {/* Filter & Sort Controls */}
               <div className="sunrise-card flex flex-wrap items-center justify-between gap-3 rounded-2xl p-4">
                 <div className="flex flex-wrap items-center gap-2">
-                  {/* Switch between fully closed trade lifecycles and individual settlements. */}
-                  <div className="flex items-center gap-1 rounded-xl border border-slate-800 bg-[#090e1a] p-1">
+                  {/* Official market totals and verified full lifecycles are not interchangeable. */}
+                  <div className="flex flex-wrap items-center gap-1 rounded-xl border border-slate-800 bg-[#090e1a] p-1">
+                    <button
+                      type="button"
+                      onClick={() => { setRzViewMode('market'); setRzMarketFilter('ALL'); setRzShowAll(false); }}
+                      aria-pressed={rzViewMode === 'market'}
+                      className={`rounded-lg px-2.5 py-1 text-xs font-mono transition-colors ${rzViewMode === 'market' ? 'bg-[#ffb02e] font-semibold text-[#1f0e03]' : 'text-slate-400 hover:text-[#e8edfb]'}`}
+                    >
+                      Market PnL Summary
+                    </button>
                     <button
                       type="button"
                       onClick={() => {
@@ -934,7 +948,7 @@ export const WalletPage: React.FC<{
                           : 'text-slate-400 hover:text-[#e8edfb]'
                       }`}
                     >
-                      Aggregated Trades ({data.closedTrades.length.toLocaleString()})
+                      Verified Trades ({data.closedTrades.length.toLocaleString()})
                     </button>
                     <button
                       type="button"
@@ -1025,17 +1039,19 @@ export const WalletPage: React.FC<{
                 </div>
               )}
               <div className="rounded-xl border border-slate-800 bg-[#090e1a]/70 px-4 py-3 text-xs text-slate-400">
-                {rzViewMode === 'cycles'
-                  ? 'Aggregated Trades combines all partial realizations belonging to a fully closed position (including reversals), and excludes partial realizations on currently open positions. PnL is credited to the final close date, so daily bars may differ from the settlement-date calendar.'
-                  : 'Partial Closes shows individual official RISEx realized-PnL events, including trims of positions that are still open. These amounts must not be added to Aggregated Trades totals.'}
+                {rzViewMode === 'market'
+                  ? 'Market PnL Summary combines official realized settlement events by market and direction. Includes partial closes on currently open positions; it is NOT one row per completed trade. Daily charts use actual settlement dates.'
+                  : rzViewMode === 'cycles'
+                    ? 'Verified Trades reconstructs full 0→0 position cycles from available fills and credits their matched realized PnL at final close. High-frequency or older fills may be missing; this view is not an all-time total.'
+                    : 'Partial Closes shows individual official RISEx realized-PnL events, including trims of still-open positions. Do not add these totals to Market PnL Summary.'}
                 {rzViewMode === 'cycles' &&
                   (data.tradesCapped || data.realizedEventsCapped || (data.unverifiedCyclesCount || 0) > 0 || (data.unattributedRealizedEvents || 0) > 0) && (
                     <div className="mt-2 text-[#ffb02e]">
-                      Historical coverage is limited: {data.tradesCapped ? 'trade fills are capped; ' : ''}
-                      {data.realizedEventsCapped ? 'settlements are capped; ' : ''}
-                      {(data.unverifiedCyclesCount || 0) > 0 ? `${data.unverifiedCyclesCount} closed lifecycles without matching official settlement events excluded; ` : ''}
-                      {(data.unattributedRealizedEvents || 0) > 0 ? `${data.unattributedRealizedEvents} settlement events could not be assigned to a completed cycle. ` : ''}
-                      Aggregated totals may be lower than the all-time realized PnL in the profile header.
+                      Verified Trades covers only reconstructed history. {data.tradesCapped ? 'Recent trade fills are capped. ' : ''}
+                      {data.realizedEventsCapped ? 'Settlement history is capped. ' : ''}
+                      {(data.unverifiedCyclesCount || 0) > 0 ? `${data.unverifiedCyclesCount} reconstructed cycles lack complete settlement coverage. ` : ''}
+                      {(data.unattributedRealizedEvents || 0) > 0 ? 'Older settlements cannot all be assigned to trade lifecycles. ' : ''}
+                      Use Market PnL Summary for complete totals across the fetched official settlement events.
                     </div>
                   )}
               </div>
@@ -1052,7 +1068,7 @@ export const WalletPage: React.FC<{
                     {formatSignedUsd(realizedStats.netPnl)}
                   </div>
                   <div className="text-[10px] font-mono text-slate-400">
-                    {realizedStats.count.toLocaleString()} {rzViewMode === 'events' ? 'realization events' : 'completed trades'}
+                    {realizedStats.count.toLocaleString()} {rzViewMode === 'events' ? 'realization events' : rzViewMode === 'market' ? 'market/side groups' : 'verified completed trades'}
                     {rzViewMode === 'cycles' && data.tradesCapped && ' (recent-fill window)'}
                   </div>
                 </div>
@@ -1081,7 +1097,7 @@ export const WalletPage: React.FC<{
                   </div>
                 </div>
                 <div className="sunrise-card rounded-xl p-3.5">
-                  <div className="text-[11px] uppercase text-slate-400">Win Rate &amp; PF</div>
+                  <div className="text-[11px] uppercase text-slate-400">{rzViewMode === 'market' ? 'Group Win Rate & PF' : 'Win Rate & PF'}</div>
                   <div className="mt-1 font-mono text-base font-bold tabular-nums text-[#ffb02e]">
                     {realizedStats.winRate.toFixed(1)}% ·{' '}
                     {realizedStats.profitFactor === Infinity
@@ -1120,7 +1136,7 @@ export const WalletPage: React.FC<{
                           className="cursor-pointer py-3 pl-4 pr-2 hover:text-[#ffb02e]"
                         >
                           <span className="inline-flex items-center gap-1">
-                            Closed Time <ArrowDownUp className="h-3 w-3" />
+                            {rzViewMode === 'market' ? 'Latest Settlement' : 'Closed Time'} <ArrowDownUp className="h-3 w-3" />
                           </span>
                         </th>
                         <th className="py-3 px-2">Market</th>
@@ -1166,6 +1182,9 @@ export const WalletPage: React.FC<{
                           >
                             <td className="py-2.5 pl-4 pr-2 text-slate-400">
                               <div>{formatDateTime(ct.closeTime)}</div>
+                              {rzViewMode === 'market' && (
+                                <div className="text-[10px] text-slate-500">{ct.fillsCount} settlement events</div>
+                              )}
                               {ct.openTime && ct.fillsCount !== null && (
                                 <div className="text-[10px] text-slate-500">
                                   Opened {formatDateTime(ct.openTime)} · {ct.fillsCount} fills
@@ -1194,8 +1213,8 @@ export const WalletPage: React.FC<{
                             <td className="py-2.5 px-2 text-right text-slate-300">
                               {formatNumber(ct.size, 4)}
                             </td>
-                            <td className="py-2.5 px-2 text-right text-slate-300">{formatPrice(ct.entryPrice)}</td>
-                            <td className="py-2.5 px-2 text-right text-slate-200">{formatPrice(ct.exitPrice)}</td>
+                            <td className="py-2.5 px-2 text-right text-slate-300">{rzViewMode === 'market' ? '—' : formatPrice(ct.entryPrice)}</td>
+                            <td className="py-2.5 px-2 text-right text-slate-200">{rzViewMode === 'market' ? '—' : formatPrice(ct.exitPrice)}</td>
                             <td className={`py-2.5 px-2 text-right ${ct.funding >= 0 ? 'text-[#22e0a1]' : 'text-[#ff4d6d]'}`}>
                               {formatSignedUsd(ct.funding)}
                             </td>
@@ -1209,8 +1228,8 @@ export const WalletPage: React.FC<{
                         <tr>
                           <td colSpan={8} className="py-10 text-center font-sans text-slate-400">
                             {rzViewMode === 'cycles'
-                              ? 'No completed trades could be verified within the available fill and settlement history. Switch to Partial Closes to review individual realization events.'
-                              : 'No individual realized-PnL events match these filters.'}
+                              ? 'No fully verified position lifecycles fit the available trade history. Try Market PnL Summary or Partial Closes.'
+                              : 'No realized-PnL data matches these filters.'}
                           </td>
                         </tr>
                       )}
@@ -1221,7 +1240,7 @@ export const WalletPage: React.FC<{
                   <div className="flex items-center justify-between border-t border-slate-800/80 bg-[#090e1a]/70 px-4 py-2.5 text-xs text-slate-400">
                     <span className="font-mono">
                       Showing {rzShowAll ? sortedRealizedRows.length.toLocaleString() : '200'} of{' '}
-                      {sortedRealizedRows.length.toLocaleString()} {rzViewMode === 'cycles' ? 'completed trades' : 'events'}
+                      {sortedRealizedRows.length.toLocaleString()} {rzViewMode === 'cycles' ? 'verified trades' : rzViewMode === 'market' ? 'market groups' : 'events'}
                     </span>
                     <button
                       type="button"
