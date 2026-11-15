@@ -5,6 +5,8 @@ import {
   Blocks,
   Compass,
   Search,
+  Moon,
+  Sun,
   Trophy,
   Users,
   Wallet,
@@ -34,6 +36,18 @@ export const Navbar: React.FC<NavbarProps> = ({
   onSelectMarket,
   markets,
 }) => {
+  const [theme,setTheme]=useState<'light'|'dark'>(()=>{
+    if(typeof document==='undefined')return 'dark';
+    return document.documentElement.dataset.theme==='light'?'light':'dark';
+  });
+  const toggleTheme=()=>{
+    setTheme(current=>{
+      const next=current==='dark'?'light':'dark';
+      document.documentElement.dataset.theme=next;
+      try{localStorage.setItem('risexscan-theme',next);}catch{/* storage disabled */}
+      return next;
+    });
+  };
   const [query, setQuery] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
@@ -167,6 +181,14 @@ export const Navbar: React.FC<NavbarProps> = ({
             );
           })}
         </nav>
+
+        <button type="button" onClick={toggleTheme}
+          aria-label={theme==='dark'?'Switch to light mode':'Switch to dark mode'}
+          title={theme==='dark'?'Light appearance':'Dark appearance'}
+          aria-pressed={theme==='light'}
+          className="risex-theme-toggle flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-700/60 bg-[#0e1526] text-[#ffb02e] transition-all hover:border-[#ffb02e]/60 hover:shadow-[0_0_0_3px_rgba(255,176,46,.1)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#ffb02e]">
+          {theme==='dark'?<Sun className="h-4 w-4"/>:<Moon className="h-4 w-4"/>}
+        </button>
 
         {/* Mobile Search Toggle */}
         <button
