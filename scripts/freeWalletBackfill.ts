@@ -89,7 +89,7 @@ async function readCursor(pool:Pool):Promise<CursorState>{
   return {
     cursor:state.cursor&&typeof state.cursor==='object'?state.cursor:null,
     complete:Boolean(state.complete),
-    pages:number(state.pages),
+    pages:number(state.pages)||0,
   };
 }
 async function writeCursor(pool:Pool,state:CursorState):Promise<void>{
@@ -196,7 +196,7 @@ async function enrichOne(pool:Pool,address:string,existing:TraderJson):Promise<'
   const pnl=realized+unrealized;
   const perf=stats?.performance;
   const sources=[...new Set([...(Array.isArray(existing?.sources)?existing.sources:[]),'github-backfill'])];
-  const positions=positionsFromDetails(details.positions||[],account,username,avatarUrl,equity,lev);
+  const positions=positionsFromDetails(Array.isArray(details.positions)?details.positions:[],account,username,avatarUrl,equity,lev);
   const patch={
     username,avatarUrl,xHandle:profile?.x_account?.username||existing?.xHandle||null,
     accountValue:equity,usdcBalance:number(summary.usdc_balance),
@@ -278,14 +278,19 @@ async function main():Promise<void>{
       console.warn('SKIP: database storage guard protects remaining free-tier headroom.');
       return;
     }
-    const discovery=await indexRegistry(pool,deadline-120_000);
+    let discoveryFailed=false;
+    const discovery=await indexRegistry(pool,deadline-120_000).catch(err=>{
+      discoveryFailed=true;
+      console.warn('Registry discovery paused; checkpoint retained:',String(err).slice(0,160));
+      return {pages:0,created:0,complete:false};
+    });
     const enrichment=await enrichPending(pool,deadline-10_000);
     console.log('Resumable wallet discovery: pages='+discovery.pages+
       ', newly stored='+discovery.created+', history complete='+discovery.complete);
     console.log('Bounded wallet enrichment: completed='+enrichment.enriched+
       ', no portfolio='+enrichment.inactive+', API errors='+enrichment.errors);
     console.log('Coverage remains partial; discovered registry signers are not necessarily active traders.');
-    if(enrichment.errors>MAX_ENRICHMENTS/2)process.exitCode=1;
+    if(discoveryFailed || enrichment.errors>MAX_ENRICHMENTS/2)process.exitCode=1;
   }finally{await pool.end();}
 }
 main().catch(err=>{
