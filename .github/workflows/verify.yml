@@ -39,6 +39,8 @@ jobs:
         run: env -u DATABASE_URL npx tsx scripts/freeHistorySampler.ts
       - name: Verify wallet-backfill safely skips without DB secret
         run: env -u DATABASE_URL npx tsx scripts/freeWalletBackfill.ts
+      - name: Verify chain-log backfill safely skips without DB secret
+        run: env -u DATABASE_URL npx tsx scripts/freeChainLogBackfill.ts
       - name: Verify PostgreSQL live storage and historical analytics
         env:
           TEST_DATABASE_URL: postgresql://risexscan:local_ci_password@localhost:5432/risexscan_test
