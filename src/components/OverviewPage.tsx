@@ -1344,9 +1344,9 @@ export const OverviewPage: React.FC<{
       </section>
 
       {/* Split: Live Fills + Top PnL Traders */}
-      <section className="grid grid-cols-1 items-start gap-5 lg:grid-cols-12">
-        {/* Live Fills */}
-        <div className="sunrise-card rounded-2xl p-4 lg:col-span-6">
+      <section className="grid grid-cols-1 items-stretch gap-5 lg:grid-cols-12">
+        {/* Show additional REAL fills; keep cards aligned with the neighboring leaderboard. */}
+        <div className="sunrise-card flex h-full flex-col rounded-2xl p-4 lg:col-span-6">
           <div className="mb-3 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Activity className="h-4 w-4 text-[#22e0a1]" />
@@ -1360,9 +1360,9 @@ export const OverviewPage: React.FC<{
               Explorer Feed →
             </button>
           </div>
-          <div className="overflow-x-auto">
+          <div className="min-h-0 flex-1 max-h-[680px] overflow-x-auto overflow-y-auto" aria-label="Latest genuine RISEx trade fills">
             <table className="w-full text-left text-xs">
-              <thead className="border-b border-slate-800 text-[11px] uppercase tracking-wider text-slate-400">
+              <thead className="sticky top-0 z-10 border-b border-slate-800 bg-[#080d18] text-[11px] uppercase tracking-wider text-slate-400">
                 <tr>
                   <th className="py-2 pr-2">Market</th>
                   <th className="py-2 px-2">Side</th>
@@ -1372,7 +1372,7 @@ export const OverviewPage: React.FC<{
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 font-mono tabular-nums">
-                {liveTrades.slice(0, 10).map((tr, i) => {
+                {liveTrades.slice(0, 30).map((tr, i) => {
                   const isBuy = tr.maker_side?.toLowerCase().includes('buy') || tr.maker_side === '0';
                   const usd = Number(tr.price) * Number(tr.size);
                   const mk = tr.market_id ? marketMetaById.get(String(tr.market_id)) : undefined;
@@ -1412,6 +1412,10 @@ export const OverviewPage: React.FC<{
                 )}
               </tbody>
             </table>
+          </div>
+          <div className="mt-2 flex items-center justify-between border-t border-slate-800/70 pt-2 text-[10px] font-mono text-slate-500">
+            <span>{liveTrades.length ? `${liveTrades.length} recent fills` : 'Awaiting RISEx trade feed'}</span>
+            <span>{liveTrades.length > 10 ? 'Scroll for earlier fills' : 'Live tape'}</span>
           </div>
         </div>
 
