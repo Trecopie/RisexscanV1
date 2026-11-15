@@ -13,7 +13,7 @@ const sample = (market_id: string, category: string, volume: string, oi: string,
   open_interest: oi,
   mark_price: mark,
   last_price: mark,
-} as RisexMarket);
+} as unknown as RisexMarket);
 
 const markets = [
   sample('1', 'crypto', '1000', '2', '100', 'BTC/USDC'),
