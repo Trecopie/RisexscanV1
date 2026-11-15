@@ -209,6 +209,7 @@ export class HistoryStore {
         volume_24h_usd=EXCLUDED.volume_24h_usd,
         funding_rate=EXCLUDED.funding_rate,
         mark_price=EXCLUDED.mark_price
+      WHERE EXCLUDED.observed_at_ms >= risexscan_market_snapshots.observed_at_ms
     `,[json]);
   }
 
