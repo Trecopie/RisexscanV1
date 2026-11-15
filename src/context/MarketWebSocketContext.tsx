@@ -143,7 +143,7 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
         }
 
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          subscribedKeyRef.current = '';
+          // Re-subscribe only when the market-id set has actually changed.
           sendSubscriptions(wsRef.current, data.markets);
         }
       }
@@ -221,7 +221,10 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
           if (disposedRef.current) return;
           setConnectionState('reconnecting');
           const delay = Math.min(30000, 1500 * Math.pow(2, attempt++));
-          reconnectTimer = setTimeout(connectWs, delay);
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            connectWs();
+          }, delay);
         };
 
         ws.onerror = () => {
@@ -235,7 +238,10 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
         if (!disposedRef.current) {
           setConnectionState('reconnecting');
           const delay = Math.min(30000, 1500 * Math.pow(2, attempt++));
-          reconnectTimer = setTimeout(connectWs, delay);
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            connectWs();
+          }, delay);
         }
       }
     };
