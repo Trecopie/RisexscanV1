@@ -6,6 +6,7 @@ import {
   calcMACD,
   calcRSI,
   calcSMA,
+  calcSupertrend,
   calcVWAP,
   mergeLiveTradeIntoBars,
   normalizeCandles,
@@ -96,3 +97,28 @@ test('calcRSI and calcMACD stay within expected bounds and lengths', () => {
   assert.equal(macd.signal.length, macd.macd.length);
   assert.equal(macd.histogram.length, macd.macd.length);
 });
+
+test('calcSupertrend tracks trend flips and outputs mutually exclusive upLine/downLine segments', () => {
+  // Construct rally followed by sharp selloff to force bullish -> bearish flip
+  const closes = [
+    100, 102, 104, 106, 108, 110, 113, 116, 119, 122, 125, 128, 130, 132,
+    120, 112, 105, 98, 92, 88, 85, 82,
+  ];
+  const bars = makeBars(closes);
+  const st = calcSupertrend(bars, 10, 2);
+
+  assert.equal(st.points.length, closes.length - 10);
+  assert.equal(st.upLine.length, st.points.length);
+  assert.equal(st.downLine.length, st.points.length);
+
+  const hasUp = st.points.some((p) => p.direction === 'up');
+  const hasDown = st.points.some((p) => p.direction === 'down');
+  assert.ok(hasUp && hasDown, 'Supertrend must detect both bullish and bearish regimes');
+
+  for (let i = 0; i < st.points.length; i++) {
+    const upHasVal = 'value' in st.upLine[i];
+    const downHasVal = 'value' in st.downLine[i];
+    assert.notEqual(upHasVal, downHasVal, 'Each bar must plot on either upLine or downLine, not both');
+  }
+});
+

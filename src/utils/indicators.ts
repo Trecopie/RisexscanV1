@@ -32,6 +32,23 @@ export interface MacdResult {
   histogram: HistogramDataPoint[];
 }
 
+export interface WhitespacePoint {
+  time: number;
+}
+
+export interface SupertrendPoint {
+  time: number;
+  value: number;
+  direction: 'up' | 'down';
+  atr: number;
+}
+
+export interface SupertrendResult {
+  points: SupertrendPoint[];
+  upLine: (LineDataPoint | WhitespacePoint)[];
+  downLine: (LineDataPoint | WhitespacePoint)[];
+}
+
 const RESOLUTION_SECONDS: Record<string, number> = {
   '1m': 60,
   '5m': 300,
@@ -294,3 +311,84 @@ export function calcMACD(
 
   return { macd: macdOut, signal: signalOut, histogram: histOut };
 }
+
+/**
+ * Standard TradingView-compatible Supertrend indicator using Wilder ATR.
+ * Returns separated bullish (`upLine`) and bearish (`downLine`) line series
+ * with whitespace gaps so trend flips render cleanly without diagonal bridges.
+ */
+export function calcSupertrend(
+  bars: NormalizedBar[],
+  atrPeriod = 10,
+  multiplier = 3
+): SupertrendResult {
+  const period = Math.max(1, Math.floor(atrPeriod));
+  const mult = Math.max(0.1, multiplier);
+  if (bars.length <= period) {
+    return { points: [], upLine: [], downLine: [] };
+  }
+
+  const trs: number[] = [bars[0].high - bars[0].low];
+  for (let i = 1; i < bars.length; i++) {
+    const prevClose = bars[i - 1].close;
+    const h = bars[i].high;
+    const l = bars[i].low;
+    trs.push(Math.max(h - l, Math.abs(h - prevClose), Math.abs(l - prevClose)));
+  }
+
+  let atrSum = 0;
+  for (let i = 1; i <= period; i++) {
+    atrSum += trs[i];
+  }
+  let atr = atrSum / period;
+
+  const points: SupertrendPoint[] = [];
+  const upLine: (LineDataPoint | WhitespacePoint)[] = [];
+  const downLine: (LineDataPoint | WhitespacePoint)[] = [];
+
+  let finalUpper = 0;
+  let finalLower = 0;
+  let direction: 'up' | 'down' = 'up';
+
+  for (let i = period; i < bars.length; i++) {
+    if (i > period) {
+      atr = (atr * (period - 1) + trs[i]) / period;
+    }
+
+    const bar = bars[i];
+    const hl2 = (bar.high + bar.low) / 2;
+    const basicUpper = hl2 + mult * atr;
+    const basicLower = hl2 - mult * atr;
+
+    if (i === period) {
+      finalUpper = basicUpper;
+      finalLower = basicLower;
+      direction = bar.close >= hl2 ? 'up' : 'down';
+    } else {
+      const prevClose = bars[i - 1].close;
+      finalUpper =
+        basicUpper < finalUpper || prevClose > finalUpper ? basicUpper : finalUpper;
+      finalLower =
+        basicLower > finalLower || prevClose < finalLower ? basicLower : finalLower;
+
+      if (direction === 'up' && bar.close < finalLower) {
+        direction = 'down';
+      } else if (direction === 'down' && bar.close > finalUpper) {
+        direction = 'up';
+      }
+    }
+
+    const val = direction === 'up' ? finalLower : finalUpper;
+    points.push({ time: bar.time, value: val, direction, atr });
+    if (direction === 'up') {
+      upLine.push({ time: bar.time, value: val });
+      downLine.push({ time: bar.time });
+    } else {
+      upLine.push({ time: bar.time });
+      downLine.push({ time: bar.time, value: val });
+    }
+  }
+
+  return { points, upLine, downLine };
+}
+

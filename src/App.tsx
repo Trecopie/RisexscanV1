@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react';
 import { Navbar, type NavTab } from './components/Navbar';
 import { OverviewPage } from './components/OverviewPage';
+import { CohortsPage } from './components/CohortsPage';
 import { LeaderboardPage } from './components/LeaderboardPage';
 import { MarketsPage } from './components/MarketsPage';
 import { TickerDetailPage } from './components/TickerDetailPage';
 import { WalletPage } from './components/WalletPage';
 import { ExplorerPage } from './components/ExplorerPage';
 import { TraderPeekDrawer } from './components/TraderPeekDrawer';
-import type { IndexedTrader, RisexMarket } from './types/risex';
+import { MarketWebSocketProvider, useMarketStream } from './context/MarketWebSocketContext';
+import type { IndexedTrader } from './types/risex';
 import { isValidAddress, isValidTxHash } from './utils/format';
 
 function parseUrlRoute(): {
@@ -28,7 +30,7 @@ function parseUrlRoute(): {
   if (wallet) return { tab: 'wallet', marketId: null, wallet, txHash: null };
   if (txHash) return { tab: 'explorer', marketId: null, wallet: null, txHash };
   if (marketId) return { tab: 'markets', marketId, wallet: null, txHash: null };
-  if (rawTab && ['overview', 'markets', 'leaderboard', 'explorer', 'wallet'].includes(rawTab)) {
+  if (rawTab && ['overview', 'markets', 'cohorts', 'leaderboard', 'explorer', 'wallet'].includes(rawTab)) {
     return { tab: rawTab, marketId: null, wallet: null, txHash: null };
   }
   return { tab: 'overview', marketId: null, wallet: null, txHash: null };
@@ -53,13 +55,13 @@ function pushUrlRoute(route: {
   }
 }
 
-export default function App() {
+function AppContent() {
   const initial = parseUrlRoute();
   const [activeTab, setActiveTab] = useState<NavTab>(initial.tab);
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(initial.marketId);
   const [selectedWallet, setSelectedWallet] = useState<string | null>(initial.wallet);
   const [selectedTxHash, setSelectedTxHash] = useState<string | null>(initial.txHash);
-  const [markets, setMarkets] = useState<RisexMarket[]>([]);
+  const { markets } = useMarketStream();
   const [searchNotice, setSearchNotice] = useState<string | null>(null);
 
   // Quick-peek drawer state
@@ -76,13 +78,6 @@ export default function App() {
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, []);
-
-  useEffect(() => {
-    fetch('/api/markets')
-      .then((r) => r.json())
-      .then((d) => d?.markets && setMarkets(d.markets))
-      .catch(() => {});
   }, []);
 
   const handleNavigate = (tab: NavTab) => {
@@ -159,17 +154,20 @@ export default function App() {
 
     // Check /api/search for RISEx usernames first, then try direct /api/wallet/:username resolution
     try {
-      const sRes = await fetch(`/api/search?q=${encodeURIComponent(q)}`).then((r) => r.json());
-      if (sRes?.traders?.length > 0) {
-        const exact = sRes.traders.find(
-          (t: IndexedTrader) => t.username && t.username.toLowerCase() === q.toLowerCase()
-        );
-        handleSelectWallet((exact || sRes.traders[0]).address);
-        return;
-      }
-      if (sRes?.markets?.length > 0) {
-        handleSelectMarket(String(sRes.markets[0].market_id));
-        return;
+      const sHttp = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+      if (sHttp.ok) {
+        const sRes = await sHttp.json();
+        if (sRes?.traders?.length > 0) {
+          const exact = sRes.traders.find(
+            (t: IndexedTrader) => t.username && t.username.toLowerCase() === q.toLowerCase()
+          );
+          handleSelectWallet((exact || sRes.traders[0]).address);
+          return;
+        }
+        if (sRes?.markets?.length > 0) {
+          handleSelectMarket(String(sRes.markets[0].market_id));
+          return;
+        }
       }
 
       // Fallback direct RISEx username lookup via /api/wallet/:username?lite=1
@@ -214,6 +212,14 @@ export default function App() {
             onSelectWallet={handleSelectWallet}
             onSelectMarket={handleSelectMarket}
             onNavigateTab={handleNavigate}
+            onPeekTrader={handlePeekTrader}
+          />
+        )}
+
+        {activeTab === 'cohorts' && (
+          <CohortsPage
+            onSelectWallet={handleSelectWallet}
+            onSelectMarket={handleSelectMarket}
             onPeekTrader={handlePeekTrader}
           />
         )}
@@ -297,5 +303,13 @@ export default function App() {
         </div>
       </footer>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <MarketWebSocketProvider>
+      <AppContent />
+    </MarketWebSocketProvider>
   );
 }

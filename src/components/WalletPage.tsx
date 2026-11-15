@@ -27,8 +27,9 @@ import {
   nsToMs,
   shortAddress,
 } from '../utils/format';
+import { normalizeRealizedSide, summarizeRealizedEvents } from '../utils/tradeLifecycle';
 import { AreaPerformanceChart, DailyBars30D, PnlCalendarHeatmap } from './Charts';
-import { CopyBtn, LiqDistanceBadge, TraderAvatar } from './TraderAvatar';
+import { CopyBtn, LiqDistanceBadge, TokenBadge, TraderAvatar } from './TraderAvatar';
 
 type WalletTab =
   | 'positions'
@@ -58,12 +59,14 @@ export const WalletPage: React.FC<{
   const [activeTab, setActiveTab] = useState<WalletTab>('positions');
 
   // Realized PnL tab filters & sorting
+  const [rzViewMode, setRzViewMode] = useState<'events' | 'cycles'>('events');
   const [rzTimeframe, setRzTimeframe] = useState<TimeframeKey>('all');
   const [rzMarketFilter, setRzMarketFilter] = useState<string>('ALL');
   const [rzSideFilter, setRzSideFilter] = useState<'ALL' | 'LONG' | 'SHORT'>('ALL');
   const [rzOutcomeFilter, setRzOutcomeFilter] = useState<'ALL' | 'WIN' | 'LOSS'>('ALL');
   const [rzSortBy, setRzSortBy] = useState<RealizedSortKey>('pnl');
   const [rzSortDesc, setRzSortDesc] = useState<boolean>(true);
+  const [rzShowAll, setRzShowAll] = useState<boolean>(false);
 
   useEffect(() => {
     fetch('/api/markets')
@@ -149,6 +152,12 @@ export const WalletPage: React.FC<{
     };
   }, [activeQuery]);
 
+  const marketMetaById = useMemo(() => {
+    const map = new Map<string, RisexMarket>();
+    for (const m of markets) map.set(String(m.market_id), m);
+    return map;
+  }, [markets]);
+
   const marketNameById = useMemo(() => {
     const map = new Map<string, string>();
     for (const m of markets) map.set(String(m.market_id), m.display_name);
@@ -163,75 +172,96 @@ export const WalletPage: React.FC<{
     onSelectWallet(q);
   };
 
-  // Filtered Completed Closed Trades (excludes partial trims on open positions)
-  const filteredRealized = useMemo(() => {
-    const raw = data?.closedTrades || [];
-    if (raw.length === 0) return [];
+  interface UnifiedRealizedRow {
+    id: string;
+    marketId: string;
+    marketName: string;
+    side: 'LONG' | 'SHORT';
+    size: number;
+    entryPrice: number;
+    exitPrice: number;
+    openTime: string | null;
+    closeTime: string;
+    fillsCount: number | null;
+    funding: number;
+    realizedPnl: number;
+  }
 
-    const latestMs = Math.max(...raw.map((r) => nsToMs(r.closeTime)), Date.now());
-    const cutoffMs =
-      rzTimeframe === '24h'
-        ? latestMs - 86400 * 1000
-        : rzTimeframe === '7d'
-          ? latestMs - 7 * 86400 * 1000
-          : rzTimeframe === '30d'
-            ? latestMs - 30 * 86400 * 1000
-            : 0;
-
-    return raw.filter((ct) => {
-      const ms = nsToMs(ct.closeTime);
-      if (cutoffMs > 0 && ms < cutoffMs) return false;
-      if (rzMarketFilter !== 'ALL' && ct.marketId !== rzMarketFilter) return false;
-      if (rzSideFilter !== 'ALL' && ct.side !== rzSideFilter) return false;
-      if (rzOutcomeFilter === 'WIN' && ct.realizedPnl <= 0) return false;
-      if (rzOutcomeFilter === 'LOSS' && ct.realizedPnl >= 0) return false;
-      return true;
-    });
-  }, [data?.closedTrades, rzTimeframe, rzMarketFilter, rzSideFilter, rzOutcomeFilter]);
-
-  const realizedStats = useMemo(() => {
-    let netPnl = 0;
-    let grossProfit = 0;
-    let grossLoss = 0;
-    let totalFunding = 0;
-    let wins = 0;
-    let losses = 0;
-    let bestClose = -Infinity;
-    let worstClose = Infinity;
-
-    for (const ct of filteredRealized) {
-      const p = ct.realizedPnl;
-      const f = ct.funding;
-      netPnl += p;
-      totalFunding += f;
-      if (p > 0) {
-        grossProfit += p;
-        wins++;
-      } else if (p < 0) {
-        grossLoss += p;
-        losses++;
-      }
-      if (p > bestClose) bestClose = p;
-      if (p < worstClose) worstClose = p;
+  const allRealizedRows = useMemo<UnifiedRealizedRow[]>(() => {
+    if (rzViewMode === 'cycles') {
+      return (data?.closedTrades || []).map((ct) => ({
+        id: ct.id,
+        marketId: ct.marketId,
+        marketName: ct.marketName,
+        side: ct.side,
+        size: ct.maxSize,
+        entryPrice: ct.entryPrice,
+        exitPrice: ct.exitPrice,
+        openTime: ct.openTime,
+        closeTime: ct.closeTime,
+        fillsCount: ct.fillsCount,
+        funding: ct.funding,
+        realizedPnl: ct.realizedPnl,
+      }));
     }
 
-    const count = filteredRealized.length;
-    const winRate = wins + losses > 0 ? (wins / (wins + losses)) * 100 : 0;
-    const profitFactor =
-      grossLoss !== 0 ? grossProfit / Math.abs(grossLoss) : grossProfit > 0 ? Infinity : 0;
+    return (data?.realizedPnlHistory || []).map((ev, idx) => {
+      const mId = String(ev.market_id);
+      return {
+        id: `${mId}-${ev.timestamp}-${idx}`,
+        marketId: mId,
+        marketName: marketNameById.get(mId) || `Market #${mId}`,
+        side: normalizeRealizedSide(ev.side),
+        size: Number(ev.size || 0),
+        entryPrice: Number(ev.entry_price || 0),
+        exitPrice: Number(ev.exit_price || 0),
+        openTime: null,
+        closeTime: ev.timestamp,
+        fillsCount: null,
+        funding: Number(ev.funding || 0),
+        realizedPnl: Number(ev.pnl || 0),
+      };
+    });
+  }, [rzViewMode, data?.closedTrades, data?.realizedPnlHistory, marketNameById]);
 
+  const filteredRealized = useMemo(() => {
+    if (allRealizedRows.length === 0) return [];
+
+    const anchorMs = Math.max(...allRealizedRows.map((r) => nsToMs(r.closeTime)), Date.now());
+    const cutoffMs =
+      rzTimeframe === '24h'
+        ? anchorMs - 86400 * 1000
+        : rzTimeframe === '7d'
+          ? anchorMs - 7 * 86400 * 1000
+          : rzTimeframe === '30d'
+            ? anchorMs - 30 * 86400 * 1000
+            : 0;
+
+    return allRealizedRows.filter((row) => {
+      const ms = nsToMs(row.closeTime);
+      if (cutoffMs > 0 && ms < cutoffMs) return false;
+      if (rzMarketFilter !== 'ALL' && row.marketId !== rzMarketFilter) return false;
+      if (rzSideFilter !== 'ALL' && row.side !== rzSideFilter) return false;
+      if (rzOutcomeFilter === 'WIN' && row.realizedPnl <= 0) return false;
+      if (rzOutcomeFilter === 'LOSS' && row.realizedPnl >= 0) return false;
+      return true;
+    });
+  }, [allRealizedRows, rzTimeframe, rzMarketFilter, rzSideFilter, rzOutcomeFilter]);
+
+  const realizedStats = useMemo(() => {
+    const s = summarizeRealizedEvents(filteredRealized);
     return {
-      count,
-      netPnl,
-      grossProfit,
-      grossLoss,
-      totalFunding,
-      wins,
-      losses,
-      winRate,
-      profitFactor,
-      bestClose: count > 0 ? bestClose : 0,
-      worstClose: count > 0 ? worstClose : 0,
+      count: s.totalEvents,
+      netPnl: s.netRealizedPnl,
+      grossProfit: s.grossProfit,
+      grossLoss: s.grossLoss,
+      totalFunding: s.totalFunding,
+      wins: s.wins,
+      losses: s.losses,
+      winRate: s.winRatePct,
+      profitFactor: s.profitFactor === null ? Infinity : s.profitFactor,
+      bestClose: s.bestClose,
+      worstClose: s.worstClose,
     };
   }, [filteredRealized]);
 
@@ -267,8 +297,8 @@ export const WalletPage: React.FC<{
         av = a.realizedPnl;
         bv = b.realizedPnl;
       } else if (rzSortBy === 'size') {
-        av = a.maxSize * (a.exitPrice || a.entryPrice || 0);
-        bv = b.maxSize * (b.exitPrice || b.entryPrice || 0);
+        av = a.size * (a.exitPrice || a.entryPrice || 0);
+        bv = b.size * (b.exitPrice || b.entryPrice || 0);
       } else if (rzSortBy === 'funding') {
         av = a.funding;
         bv = b.funding;
@@ -291,9 +321,9 @@ export const WalletPage: React.FC<{
 
   const uniqueRealizedMarkets = useMemo(() => {
     const set = new Set<string>();
-    for (const ct of data?.closedTrades || []) set.add(ct.marketId);
+    for (const row of allRealizedRows) set.add(row.marketId);
     return Array.from(set);
-  }, [data?.closedTrades]);
+  }, [allRealizedRows]);
 
   const username = data?.profile?.username || null;
   const avatarUrl =
@@ -747,7 +777,10 @@ export const WalletPage: React.FC<{
             {(
               [
                 { id: 'positions', label: `Open Positions (${data.positions.length})` },
-                { id: 'realized', label: 'Realized PnL' },
+                {
+                  id: 'realized',
+                  label: `Realized PnL (${(data.realizedPnlHistory?.length || data.closedTrades.length).toLocaleString()})`,
+                },
                 { id: 'fills', label: `Trade Fills (${data.trades.length})` },
                 { id: 'orders', label: `Orders (${data.openOrders.length} open / ${data.orderHistory.length})` },
                 { id: 'funding', label: `Funding Payments (${data.fundingPayments.length})` },
@@ -866,12 +899,46 @@ export const WalletPage: React.FC<{
             </div>
           )}
 
-          {/* TAB 2: REALIZED PNL (Sortable by Realized PnL + Summary + Charts) */}
+          {/* TAB 2: REALIZED PNL (Official Realized Events by Default + Closed Cycles View) */}
           {activeTab === 'realized' && (
             <div className="space-y-5">
               {/* Filter & Sort Controls */}
               <div className="sunrise-card flex flex-wrap items-center justify-between gap-3 rounded-2xl p-4">
                 <div className="flex flex-wrap items-center gap-2">
+                  {/* View Switcher: Official Events vs Reconstructed Full Position Cycles */}
+                  <div className="flex items-center gap-1 rounded-xl border border-slate-800 bg-[#090e1a] p-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRzViewMode('events');
+                        setRzMarketFilter('ALL');
+                        setRzShowAll(false);
+                      }}
+                      className={`rounded-lg px-2.5 py-1 text-xs font-mono transition-colors ${
+                        rzViewMode === 'events'
+                          ? 'bg-[#22e0a1] font-semibold text-[#041b12]'
+                          : 'text-slate-400 hover:text-[#e8edfb]'
+                      }`}
+                    >
+                      Realized Events ({(data.realizedPnlHistory?.length || 0).toLocaleString()})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRzViewMode('cycles');
+                        setRzMarketFilter('ALL');
+                        setRzShowAll(false);
+                      }}
+                      className={`rounded-lg px-2.5 py-1 text-xs font-mono transition-colors ${
+                        rzViewMode === 'cycles'
+                          ? 'bg-[#ffb02e] font-semibold text-[#1f0e03]'
+                          : 'text-slate-400 hover:text-[#e8edfb]'
+                      }`}
+                    >
+                      Closed Cycles ({data.closedTrades.length.toLocaleString()})
+                    </button>
+                  </div>
+
                   <div className="flex items-center gap-1 rounded-xl border border-slate-800 bg-[#090e1a] p-1">
                     {(['24h', '7d', '30d', 'all'] as TimeframeKey[]).map((tf) => (
                       <button
@@ -950,8 +1017,8 @@ export const WalletPage: React.FC<{
                     {formatSignedUsd(realizedStats.netPnl)}
                   </div>
                   <div className="text-[10px] font-mono text-slate-400">
-                    {realizedStats.count.toLocaleString()} closed trades
-                    {data.tradesCapped && ' (latest 3,000 fills)'}
+                    {realizedStats.count.toLocaleString()} {rzViewMode === 'events' ? 'realized events' : 'closed cycles'}
+                    {rzViewMode === 'cycles' && data.tradesCapped && ' (1,600-fill window)'}
                   </div>
                 </div>
                 <div className="sunrise-card rounded-xl p-3.5">
@@ -959,14 +1026,14 @@ export const WalletPage: React.FC<{
                   <div className="mt-1 font-mono text-lg font-bold tabular-nums text-[#22e0a1]">
                     {formatSignedUsd(realizedStats.grossProfit)}
                   </div>
-                  <div className="text-[10px] font-mono text-slate-400">{realizedStats.wins} wins</div>
+                  <div className="text-[10px] font-mono text-slate-400">{realizedStats.wins.toLocaleString()} wins</div>
                 </div>
                 <div className="sunrise-card rounded-xl p-3.5">
                   <div className="text-[11px] uppercase text-slate-400">Gross Loss</div>
                   <div className="mt-1 font-mono text-lg font-bold tabular-nums text-[#ff4d6d]">
                     {formatSignedUsd(realizedStats.grossLoss)}
                   </div>
-                  <div className="text-[10px] font-mono text-slate-400">{realizedStats.losses} losses</div>
+                  <div className="text-[10px] font-mono text-slate-400">{realizedStats.losses.toLocaleString()} losses</div>
                 </div>
                 <div className="sunrise-card rounded-xl p-3.5">
                   <div className="text-[11px] uppercase text-slate-400">Net Funding</div>
@@ -979,7 +1046,7 @@ export const WalletPage: React.FC<{
                   </div>
                 </div>
                 <div className="sunrise-card rounded-xl p-3.5">
-                  <div className="text-[11px] uppercase text-slate-400">Win Rate & PF</div>
+                  <div className="text-[11px] uppercase text-slate-400">Win Rate &amp; PF</div>
                   <div className="mt-1 font-mono text-base font-bold tabular-nums text-[#ffb02e]">
                     {realizedStats.winRate.toFixed(1)}% ·{' '}
                     {realizedStats.profitFactor === Infinity
@@ -1007,7 +1074,7 @@ export const WalletPage: React.FC<{
                 <DailyBars30D items={dailyRealizedBars} height={210} />
               </div>
 
-              {/* Closed Positions Table with Clickable Realized PnL Sort */}
+              {/* Realized PnL Table with Clickable Sort */}
               <div className="sunrise-card overflow-hidden rounded-2xl">
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs">
@@ -1054,53 +1121,82 @@ export const WalletPage: React.FC<{
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60 font-mono tabular-nums">
-                      {sortedRealizedRows.slice(0, 200).map((ct) => (
-                        <tr
-                          key={ct.id}
-                          onClick={() => onSelectMarket(ct.marketId)}
-                          className="cursor-pointer hover:bg-[#131c31]/60"
-                        >
-                          <td className="py-2.5 pl-4 pr-2 text-slate-400">
-                            <div>{formatDateTime(ct.closeTime)}</div>
-                            <div className="text-[10px] text-slate-500">
-                              Opened {formatDateTime(ct.openTime)} · {ct.fillsCount} fills
-                            </div>
-                          </td>
-                          <td className="py-2.5 px-2 font-sans font-semibold text-[#e8edfb]">
-                            {ct.marketName}
-                          </td>
-                          <td className="py-2.5 px-2">
-                            <span
-                              className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                                ct.side === 'LONG' ? 'bg-[#22e0a1]/15 text-[#22e0a1]' : 'bg-[#ff4d6d]/15 text-[#ff4d6d]'
-                              }`}
-                            >
-                              {ct.side}
-                            </span>
-                          </td>
-                          <td className="py-2.5 px-2 text-right text-slate-300">
-                            {formatNumber(ct.maxSize, 4)}
-                          </td>
-                          <td className="py-2.5 px-2 text-right text-slate-300">{formatPrice(ct.entryPrice)}</td>
-                          <td className="py-2.5 px-2 text-right text-slate-200">{formatPrice(ct.exitPrice)}</td>
-                          <td className={`py-2.5 px-2 text-right ${ct.funding >= 0 ? 'text-[#22e0a1]' : 'text-[#ff4d6d]'}`}>
-                            {formatSignedUsd(ct.funding)}
-                          </td>
-                          <td className={`py-2.5 pl-2 pr-4 text-right font-semibold ${ct.realizedPnl >= 0 ? 'text-[#22e0a1]' : 'text-[#ff4d6d]'}`}>
-                            {formatSignedUsd(ct.realizedPnl)}
-                          </td>
-                        </tr>
-                      ))}
+                      {(rzShowAll ? sortedRealizedRows : sortedRealizedRows.slice(0, 200)).map((ct) => {
+                        const mk = marketMetaById.get(ct.marketId);
+                        return (
+                          <tr
+                            key={ct.id}
+                            onClick={() => onSelectMarket(ct.marketId)}
+                            className="cursor-pointer hover:bg-[#131c31]/60"
+                          >
+                            <td className="py-2.5 pl-4 pr-2 text-slate-400">
+                              <div>{formatDateTime(ct.closeTime)}</div>
+                              {ct.openTime && ct.fillsCount !== null && (
+                                <div className="text-[10px] text-slate-500">
+                                  Opened {formatDateTime(ct.openTime)} · {ct.fillsCount} fills
+                                </div>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-2 font-sans font-semibold text-[#e8edfb]">
+                              <div className="flex items-center gap-2">
+                                <TokenBadge
+                                  symbol={mk?.base_asset_symbol || ct.marketName}
+                                  category={mk?.category}
+                                  size={20}
+                                />
+                                <span>{ct.marketName}</span>
+                              </div>
+                            </td>
+                            <td className="py-2.5 px-2">
+                              <span
+                                className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                                  ct.side === 'LONG' ? 'bg-[#22e0a1]/15 text-[#22e0a1]' : 'bg-[#ff4d6d]/15 text-[#ff4d6d]'
+                                }`}
+                              >
+                                {ct.side}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-2 text-right text-slate-300">
+                              {formatNumber(ct.size, 4)}
+                            </td>
+                            <td className="py-2.5 px-2 text-right text-slate-300">{formatPrice(ct.entryPrice)}</td>
+                            <td className="py-2.5 px-2 text-right text-slate-200">{formatPrice(ct.exitPrice)}</td>
+                            <td className={`py-2.5 px-2 text-right ${ct.funding >= 0 ? 'text-[#22e0a1]' : 'text-[#ff4d6d]'}`}>
+                              {formatSignedUsd(ct.funding)}
+                            </td>
+                            <td className={`py-2.5 pl-2 pr-4 text-right font-semibold ${ct.realizedPnl >= 0 ? 'text-[#22e0a1]' : 'text-[#ff4d6d]'}`}>
+                              {formatSignedUsd(ct.realizedPnl)}
+                            </td>
+                          </tr>
+                        );
+                      })}
                       {sortedRealizedRows.length === 0 && (
                         <tr>
                           <td colSpan={8} className="py-10 text-center font-sans text-slate-400">
-                            No completely closed trades match the active filters (partial realizations on active trades are shown in Open Positions).
+                            {rzViewMode === 'cycles'
+                              ? 'No complete 0→0 position cycles fit in the latest 1,600 fills. Switch to Realized Events to see all settlement closes.'
+                              : 'No realized PnL events match the active filters.'}
                           </td>
                         </tr>
                       )}
                     </tbody>
                   </table>
                 </div>
+                {sortedRealizedRows.length > 200 && (
+                  <div className="flex items-center justify-between border-t border-slate-800/80 bg-[#090e1a]/70 px-4 py-2.5 text-xs text-slate-400">
+                    <span className="font-mono">
+                      Showing {rzShowAll ? sortedRealizedRows.length.toLocaleString() : '200'} of{' '}
+                      {sortedRealizedRows.length.toLocaleString()} events
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setRzShowAll((v) => !v)}
+                      className="rounded-lg border border-slate-700/70 bg-[#0e1526] px-3 py-1 font-mono text-xs text-[#ffb02e] hover:border-[#ffb02e]/60"
+                    >
+                      {rzShowAll ? 'Collapse to 200' : `Show All ${sortedRealizedRows.length.toLocaleString()}`}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}

@@ -77,37 +77,58 @@ export const TickerDetailPage: React.FC<{
   const [sideFilter, setSideFilter] = useState<'ALL' | 'LONG' | 'SHORT'>('ALL');
   const [posSearch, setPosSearch] = useState('');
 
+  const marketAbortRef = React.useRef<AbortController | null>(null);
+  const candleAbortRef = React.useRef<AbortController | null>(null);
+
   useEffect(() => {
-    fetch('/api/markets')
-      .then((r) => r.json())
+    const controller = new AbortController();
+    fetch('/api/markets', { signal: controller.signal })
+      .then((r) => (r.ok ? r.json() : null))
       .then((d) => d?.markets && setAllMarkets(d.markets))
       .catch(() => {});
+    return () => controller.abort();
   }, []);
 
   const loadMarketData = async (showLoader = false) => {
+    marketAbortRef.current?.abort();
+    const controller = new AbortController();
+    marketAbortRef.current = controller;
     if (showLoader) setLoading(true);
+    const safeJson = async (url: string) => {
+      const r = await fetch(url, { signal: controller.signal });
+      if (!r.ok) return null;
+      return r.json();
+    };
     try {
-      const [anRes, obRes, trRes, fnRes] = await Promise.all([
-        fetch(`/api/ticker/${marketId}/analytics`).then((r) => r.json()),
-        fetch(`/api/markets/${marketId}/orderbook`).then((r) => r.json()),
-        fetch(`/api/markets/${marketId}/trades?limit=60`).then((r) => r.json()),
-        fetch(`/api/markets/${marketId}/funding`).then((r) => r.json()),
+      const [anRes, obRes, trRes, fnRes] = await Promise.allSettled([
+        safeJson(`/api/ticker/${marketId}/analytics`),
+        safeJson(`/api/markets/${marketId}/orderbook`),
+        safeJson(`/api/markets/${marketId}/trades?limit=60`),
+        safeJson(`/api/markets/${marketId}/funding`),
       ]);
-      if (anRes && !anRes.error) setAnalytics(anRes);
-      if (obRes && !obRes.error) setOrderbook({ bids: obRes.bids || [], asks: obRes.asks || [] });
-      if (trRes?.trades) setTrades(trRes.trades);
-      if (fnRes?.records) setFundingHistory(fnRes.records);
+      if (controller.signal.aborted) return;
+      if (anRes.status === 'fulfilled' && anRes.value && !anRes.value.error) setAnalytics(anRes.value);
+      if (obRes.status === 'fulfilled' && obRes.value && !obRes.value.error) {
+        setOrderbook({ bids: obRes.value.bids || [], asks: obRes.value.asks || [] });
+      }
+      if (trRes.status === 'fulfilled' && trRes.value?.trades) setTrades(trRes.value.trades);
+      if (fnRes.status === 'fulfilled' && fnRes.value?.records) setFundingHistory(fnRes.value.records);
     } catch {
       // ignore
     } finally {
-      if (showLoader) setLoading(false);
+      if (showLoader && !controller.signal.aborted) setLoading(false);
     }
   };
 
   const loadCandles = () => {
-    fetch(`/api/markets/${marketId}/candles?resolution=${resolution}`)
-      .then((r) => r.json())
-      .then((d) => d?.candles && setCandles(d.candles))
+    candleAbortRef.current?.abort();
+    const controller = new AbortController();
+    candleAbortRef.current = controller;
+    fetch(`/api/markets/${marketId}/candles?resolution=${resolution}`, { signal: controller.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!controller.signal.aborted && d?.candles) setCandles(d.candles);
+      })
       .catch(() => {});
   };
 
@@ -118,11 +139,15 @@ export const TickerDetailPage: React.FC<{
         loadMarketData(false);
       }
     }, 12000);
-    return () => clearInterval(timer);
+    return () => {
+      marketAbortRef.current?.abort();
+      clearInterval(timer);
+    };
   }, [marketId]);
 
   useEffect(() => {
     loadCandles();
+    return () => candleAbortRef.current?.abort();
   }, [marketId, resolution]);
 
   // Live WS trades for active ticker with automatic reconnect backoff
@@ -152,7 +177,13 @@ export const TickerDetailPage: React.FC<{
             if (!payload) return;
             const items = Array.isArray(payload) ? payload : payload.trades || [payload];
             const fresh: MarketTrade[] = items
-              .filter((t: any) => t && t.price && t.size)
+              .filter(
+                (t: any) =>
+                  t &&
+                  t.price &&
+                  t.size &&
+                  (!t.market_id || String(t.market_id) === String(marketId))
+              )
               .map((t: any) => ({
                 id: String(t.id || `${Date.now()}-${Math.random()}`),
                 maker_side: String(t.maker_side || t.side || 'buy'),

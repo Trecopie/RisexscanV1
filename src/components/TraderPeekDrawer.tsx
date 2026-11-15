@@ -21,6 +21,7 @@ export const TraderPeekDrawer: React.FC<{
 }> = ({ traderAddress, seedTrader, onClose, onOpenFullProfile, onSelectMarket }) => {
   const [profile, setProfile] = useState<LiteWalletProfile | null>(null);
   const [loading, setLoading] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!traderAddress) return;
@@ -34,24 +35,29 @@ export const TraderPeekDrawer: React.FC<{
   useEffect(() => {
     if (!traderAddress) {
       setProfile(null);
+      setFetchError(null);
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
     setLoading(true);
-    fetch(`/api/wallet/${encodeURIComponent(traderAddress)}?lite=1`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (!cancelled && d && !d.error) {
-          setProfile(d);
-        }
+    setFetchError(null);
+    fetch(`/api/wallet/${encodeURIComponent(traderAddress)}?lite=1`, { signal: controller.signal })
+      .then(async (r) => {
+        const d = await r.json();
+        if (!r.ok || d?.error) throw new Error(d?.error || `Failed (${r.status})`);
+        return d;
       })
-      .catch(() => {})
+      .then((d) => {
+        setProfile(d);
+      })
+      .catch((err) => {
+        if (err?.name === 'AbortError') return;
+        setFetchError(err.message || 'Could not sync live wallet');
+      })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [traderAddress]);
 
   if (!traderAddress) return null;
@@ -133,6 +139,11 @@ export const TraderPeekDrawer: React.FC<{
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
+          {fetchError && !loading && (
+            <div className="rounded-lg border border-[#ffb02e]/35 bg-[#ffb02e]/10 px-3 py-2 text-xs text-[#ffb02e]">
+              {fetchError}
+            </div>
+          )}
           {inLiq && (
             <div className="flex items-center gap-2 rounded-lg border border-[#ff4d6d]/40 bg-[#ff4d6d]/12 px-3 py-2 text-xs text-[#ff4d6d]">
               <ShieldAlert className="h-4 w-4 shrink-0" />

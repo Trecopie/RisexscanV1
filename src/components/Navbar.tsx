@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   BarChart3,
@@ -6,6 +6,7 @@ import {
   Compass,
   Search,
   Trophy,
+  Users,
   Wallet,
   X,
 } from 'lucide-react';
@@ -14,7 +15,7 @@ import { calcMarketChangePct, formatPct, formatPrice, formatSignedUsd, shortAddr
 import { RisexSymbol } from './RisexSymbol';
 import { TokenBadge, TraderAvatar } from './TraderAvatar';
 
-export type NavTab = 'overview' | 'markets' | 'leaderboard' | 'explorer' | 'wallet';
+export type NavTab = 'overview' | 'markets' | 'cohorts' | 'leaderboard' | 'explorer' | 'wallet';
 
 interface NavbarProps {
   activeTab: NavTab;
@@ -67,22 +68,31 @@ export const Navbar: React.FC<NavbarProps> = ({
     const trimmed = query.trim();
     if (!trimmed) {
       setResults({ markets: [], traders: [] });
+      setSearchLoading(false);
       return;
     }
+    const controller = new AbortController();
     const timer = setTimeout(() => {
       setSearchLoading(true);
-      fetch(`/api/search?q=${encodeURIComponent(trimmed)}`)
-        .then((r) => r.json())
+      fetch(`/api/search?q=${encodeURIComponent(trimmed)}`, { signal: controller.signal })
+        .then((r) => (r.ok ? r.json() : null))
         .then((d) => {
-          setResults({
-            markets: d?.markets || [],
-            traders: d?.traders || [],
-          });
+          if (d && !controller.signal.aborted) {
+            setResults({
+              markets: d.markets || [],
+              traders: d.traders || [],
+            });
+          }
         })
         .catch(() => {})
-        .finally(() => setSearchLoading(false));
+        .finally(() => {
+          if (!controller.signal.aborted) setSearchLoading(false);
+        });
     }, 180);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [query]);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -96,35 +106,41 @@ export const Navbar: React.FC<NavbarProps> = ({
   const navItems: { id: NavTab; label: string; icon: React.ReactNode }[] = [
     { id: 'overview', label: 'Overview', icon: <Compass className="h-3.5 w-3.5" /> },
     { id: 'markets', label: 'Markets', icon: <BarChart3 className="h-3.5 w-3.5" /> },
+    { id: 'cohorts', label: 'Cohorts', icon: <Users className="h-3.5 w-3.5" /> },
     { id: 'leaderboard', label: 'Leaderboard', icon: <Trophy className="h-3.5 w-3.5" /> },
     { id: 'explorer', label: 'Explorer', icon: <Blocks className="h-3.5 w-3.5" /> },
     { id: 'wallet', label: 'Wallet', icon: <Wallet className="h-3.5 w-3.5" /> },
   ];
 
-  const tickerItems = [...markets]
-    .sort((a, b) => Number(b.quote_volume_24h || 0) - Number(a.quote_volume_24h || 0))
-    .slice(0, 18);
+  const tickerItems = useMemo(
+    () =>
+      [...markets]
+        .filter((m) => m.active !== false && Number(m.mark_price || m.last_price) > 0)
+        .sort((a, b) => Number(b.quote_volume_24h || 0) - Number(a.quote_volume_24h || 0))
+        .slice(0, 20),
+    [markets]
+  );
 
   return (
-    <header className="sticky top-0 z-40 border-b border-slate-700/25 bg-[#05070d]/88 backdrop-blur-md">
-      <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-3 px-4 py-2.5 sm:px-6">
+    <header className="sticky top-0 z-40 border-b border-slate-800/80 bg-[#060911]/95 backdrop-blur-sm">
+      <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-3 px-4 py-2 sm:px-6">
         {/* Brand */}
         <button
           type="button"
           onClick={() => onNavigate('overview')}
           className="flex shrink-0 items-center gap-2.5 text-left group"
         >
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#03DE82]/40 bg-[#090e1a] shadow-[0_0_16px_rgba(3,222,130,0.22)]">
-            <RisexSymbol className="h-4.5 w-4.5 text-[#03DE82]" />
+          <span className="flex h-7 w-7 items-center justify-center rounded-md border border-[#03DE82]/35 bg-[#0a0f1c]">
+            <RisexSymbol className="h-4 w-4 text-[#03DE82]" />
           </span>
           <div className="leading-tight">
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-2">
               <span className="font-display text-base font-bold tracking-tight text-[#e8edfb] group-hover:text-[#ffb02e] transition-colors">
-                RISEx<span className="sunrise-gradient-text">Scan</span>
+                RISEx<span className="text-[#ffb02e]">Scan</span>
               </span>
-              <span className="hidden sm:inline-flex items-center gap-1 rounded bg-[#22e0a1]/10 px-1.5 py-0.5 text-[10px] font-mono font-semibold text-[#22e0a1] border border-[#22e0a1]/25">
-                <Activity className="h-2.5 w-2.5" />
-                RISE 4153
+              <span className="hidden sm:inline-flex items-center gap-1 text-[10px] font-mono text-slate-500">
+                <Activity className="h-2.5 w-2.5 text-[#03DE82]" />
+                4153
               </span>
             </div>
           </div>
@@ -221,7 +237,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                         className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left hover:bg-[#131c31]"
                       >
                         <div className="flex items-center gap-2">
-                          <TokenBadge symbol={m.base_asset_symbol} size={22} />
+                          <TokenBadge symbol={m.base_asset_symbol} category={m.category} size={22} />
                           <div>
                             <div className="text-xs font-semibold text-[#e8edfb]">{m.display_name}</div>
                             <div className="text-[10px] text-slate-400">{m.category || 'PERP'} · Max {m.config?.max_leverage || '—'}x</div>
@@ -303,20 +319,36 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Live Scrolling Market Ticker Strip */}
       {tickerItems.length > 0 && (
-        <div className="ticker-wrap overflow-hidden border-t border-slate-800/70 bg-[#090e1a]/90 py-1.5">
+        <div className="ticker-wrap overflow-hidden border-t border-slate-800/75 bg-[#070b15]/95 py-1">
           <div className="ticker-track">
             {[...tickerItems, ...tickerItems].map((m, i) => {
-              const chg = calcMarketChangePct(m.mark_price || m.last_price, m.change_24h);
+              const mark = Number(m.mark_price || m.last_price || 0);
+              const chg = calcMarketChangePct(mark, m.change_24h);
+              const up = chg >= 0;
+              const sym = m.base_asset_symbol.replace(/\/.*$/, '').replace(/\s*\[deprecated.*$/i, '').trim();
+              const half = i < tickerItems.length ? 'a' : 'b';
               return (
                 <button
-                  key={`${m.market_id}-${i}`}
+                  key={`${m.market_id}-${half}`}
                   type="button"
                   onClick={() => onSelectMarket(String(m.market_id))}
-                  className="flex shrink-0 items-center gap-2 text-xs font-mono tabular-nums hover:text-[#ffb02e] transition-colors"
+                  className="group flex shrink-0 items-center gap-1.5 rounded border border-slate-800/80 bg-[#0b1120]/90 px-2 py-0.5 text-[11px] font-mono tabular-nums whitespace-nowrap hover:border-[#ffb02e]/50 hover:bg-[#121b31] transition-colors"
                 >
-                  <span className="font-semibold text-[#e8edfb]">{m.display_name}</span>
-                  <span className="text-slate-300">{formatPrice(m.mark_price || m.last_price)}</span>
-                  <span className={chg >= 0 ? 'text-[#22e0a1]' : 'text-[#ff4d6d]'}>
+                  <TokenBadge symbol={m.base_asset_symbol} category={m.category} size={16} />
+                  <span className="font-display text-[11px] font-bold tracking-tight text-[#e8edfb] group-hover:text-[#ffb02e] transition-colors">
+                    {sym}
+                  </span>
+                  <span className="text-[11px] text-slate-300">{formatPrice(mark)}</span>
+                  <span
+                    className={`inline-flex items-center gap-0.5 rounded px-1.5 py-[1px] text-[10px] font-bold leading-tight ${
+                      up
+                        ? 'border border-[#22e0a1]/30 bg-[#22e0a1]/15 text-[#22e0a1]'
+                        : 'border border-[#ff4d6d]/30 bg-[#ff4d6d]/15 text-[#ff4d6d]'
+                    }`}
+                  >
+                    <span aria-hidden="true" className="text-[8px]">
+                      {up ? '▲' : '▼'}
+                    </span>
                     {formatPct(chg)}
                   </span>
                 </button>

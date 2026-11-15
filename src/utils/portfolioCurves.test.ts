@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildConsistentPnlSeries,
   buildUtcMonthCalendar,
+  computeRolling24hPnl,
   computeUtcPeriodPnl,
   normalizeCalendarAndPeriodMetrics,
   reconstructAccountEquitySeries,
@@ -220,4 +221,40 @@ test('reconstructAccountEquitySeries uses clean 1D/1W mark-to-market equity whil
   assert.ok(series['1M'].every((p) => Number(p.value) >= 0));
   assert.ok(series['ALL'].every((p) => Number(p.value) >= 0));
 });
+
+test('computeRolling24hPnl matches RISEx rolling 24h chart across UTC midnight instead of truncating to UTC today', () => {
+  const nowMs = Date.UTC(2026, 10, 15, 4, 30, 0); // 04:30 UTC Nov 15
+  // Upstream 1D chart starts at Nov 14 04:30 UTC and ends at Nov 15 04:30 UTC with delta +138897.08
+  const upstreamPnl1D = [
+    { timestamp: String(nowMs - 86_400_000), value: '10000.00' },
+    { timestamp: String(nowMs - 43_200_000), value: '124085.82' },
+    { timestamp: String(nowMs), value: '148897.08' },
+  ];
+  const realizedEvents = [
+    { timestamp: String(Date.UTC(2026, 10, 14, 15, 0, 0)), pnl: '114085.82' },
+    { timestamp: String(Date.UTC(2026, 10, 15, 2, 0, 0)), pnl: '24811.26' },
+  ];
+  const calDays = [
+    { date: String(Date.UTC(2026, 10, 14)), pnl: '114085.82' },
+    { date: String(Date.UTC(2026, 10, 15)), pnl: '24811.26' },
+  ];
+
+  const rolling24h = computeRolling24hPnl({
+    upstreamPnl1D,
+    realizedEvents,
+    calDays,
+    nowMs,
+  });
+  assert.ok(Math.abs(rolling24h - 138897.08) < 0.01);
+
+  // Even without upstream 1D chart, rolling 24h uses realized events in [now - 24h .. now]
+  const fallbackRolling = computeRolling24hPnl({
+    upstreamPnl1D: [],
+    realizedEvents,
+    calDays,
+    nowMs,
+  });
+  assert.ok(Math.abs(fallbackRolling - 138897.08) < 0.01);
+});
+
 

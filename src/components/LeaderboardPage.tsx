@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Activity,
   ArrowDownUp,
   Crown,
   ExternalLink,
@@ -11,6 +12,7 @@ import {
 } from 'lucide-react';
 import type { IndexedTrader, LeaderboardResponse, TimeframeKey } from '../types/risex';
 import { formatPct, formatSignedUsd, formatUsd, shortAddress } from '../utils/format';
+import { LeaderboardSyncDiagnostic } from './LeaderboardSyncDiagnostic';
 import { TraderAvatar } from './TraderAvatar';
 
 type SortKey =
@@ -37,15 +39,34 @@ export const LeaderboardPage: React.FC<{
   const [sortDesc, setSortDesc] = useState(true);
   const [search, setSearch] = useState('');
   const [pageSize, setPageSize] = useState(50);
+  const [error, setError] = useState<string | null>(null);
+  const [diagOpen, setDiagOpen] = useState(false);
+  const [diagTarget, setDiagTarget] = useState('sqalf');
+  const lbAbortRef = useRef<AbortController | null>(null);
 
   const loadLeaderboard = () => {
-    fetch('/api/leaderboard')
-      .then((r) => r.json())
-      .then((d: LeaderboardResponse) => {
-        if (d?.traders) setData(d);
+    lbAbortRef.current?.abort();
+    const controller = new AbortController();
+    lbAbortRef.current = controller;
+    fetch('/api/leaderboard', { signal: controller.signal })
+      .then(async (r) => {
+        const d = await r.json();
+        if (!r.ok) throw new Error(d?.error || `Leaderboard error (${r.status})`);
+        return d as LeaderboardResponse;
       })
-      .catch(() => {})
-      .finally(() => setLoading(false));
+      .then((d) => {
+        if (d?.traders) {
+          setData(d);
+          setError(null);
+        }
+      })
+      .catch((err) => {
+        if (err?.name === 'AbortError') return;
+        setError(err.message || 'Failed to load leaderboard');
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
   };
 
   useEffect(() => {
@@ -55,13 +76,21 @@ export const LeaderboardPage: React.FC<{
         loadLeaderboard();
       }
     }, 15000);
-    return () => clearInterval(t);
+    return () => {
+      lbAbortRef.current?.abort();
+      clearInterval(t);
+    };
   }, []);
 
-  const getPeriodPnl = (t: IndexedTrader): number => {
-    if (timeframe === '24h') return t.pnl24h ?? 0;
-    if (timeframe === '7d') return t.pnl7d ?? 0;
-    if (timeframe === '30d') return t.pnl30d ?? 0;
+  const openDiagnosticFor = (target: string) => {
+    setDiagTarget(target);
+    setDiagOpen(true);
+  };
+
+  const getPeriodPnl = (t: IndexedTrader): number | null => {
+    if (timeframe === '24h') return t.pnl24h;
+    if (timeframe === '7d') return t.pnl7d;
+    if (timeframe === '30d') return t.pnl30d;
     return t.totalPnlAll;
   };
 
@@ -93,34 +122,40 @@ export const LeaderboardPage: React.FC<{
       if (cohort === 'enriched' && !t.portfolioEnriched) return false;
       if (cohort === 'positions' && t.openPositionsCount === 0) return false;
       if (cohort === 'whales' && t.accountValue < 10000) return false;
-      if (cohort === 'profitable' && getPeriodPnl(t) <= 0) return false;
+      if (cohort === 'profitable') {
+        const p = getPeriodPnl(t);
+        if (p === null || p <= 0) return false;
+      }
       return true;
     });
 
-    const getVal = (t: IndexedTrader): number => {
+    const getVal = (t: IndexedTrader): number | null => {
       switch (sortBy) {
         case 'pnl':
           return getPeriodPnl(t);
         case 'realized':
           return t.realizedPnlAll;
         case 'unrealized':
-          return t.unrealizedPnl;
+          return t.portfolioEnriched ? t.unrealizedPnl : null;
         case 'roi':
-          return getPeriodRoi(t) ?? -999999;
+          return getPeriodRoi(t);
         case 'accountValue':
           return t.accountValue;
         case 'volume':
           return getPeriodVol(t);
         case 'winRate':
-          return t.winRate ?? -1;
+          return t.winRate;
         case 'sharpe':
-          return t.sharpeRatio ?? -999;
+          return t.sharpeRatio;
       }
     };
 
     return [...filtered].sort((a, b) => {
       const av = getVal(a);
       const bv = getVal(b);
+      if (av === null && bv === null) return 0;
+      if (av === null) return 1;
+      if (bv === null) return -1;
       return sortDesc ? bv - av : av - bv;
     });
   }, [data, search, cohort, sortBy, sortDesc, timeframe]);
@@ -149,43 +184,84 @@ export const LeaderboardPage: React.FC<{
       {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <div className="flex items-center gap-2 text-xs font-mono text-[#ffb02e]">
+          <div className="flex items-center gap-2 text-[11px] font-mono uppercase tracking-wider text-[#ffb02e]">
             <Trophy className="h-3.5 w-3.5" />
-            RISEx SMART-MONEY LEADERBOARD
+            RISEx Trader Leaderboard
           </div>
-          <h1 className="mt-1 font-display text-2xl sm:text-3xl font-bold text-[#e8edfb]">
-            Traders by PnL, ROI & Realized Performance
+          <h1 className="mt-0.5 font-display text-2xl font-bold text-[#e8edfb]">
+            Traders by PnL, ROI &amp; Realized Performance
           </h1>
-          <p className="mt-1 text-xs text-slate-400">
-            Showing RISEx account usernames where set ·{' '}
-            <span className="font-mono text-slate-200">{data?.totalDiscovered?.toLocaleString() || 0}</span> discovered ·{' '}
-            <span className="font-mono text-[#22e0a1]">{data?.totalEnriched?.toLocaleString() || 0}</span> full portfolios enriched
+          <p className="mt-1 text-xs font-mono text-slate-400">
+            <span className="text-slate-200">{data?.totalDiscovered?.toLocaleString() || 0}</span> indexed accounts ·{' '}
+            <span className="text-[#22e0a1]">{data?.totalEnriched?.toLocaleString() || 0}</span> live portfolios
             {data?.indexingInProgress && (
               <span className="ml-2 inline-flex items-center gap-1 text-[#ffb02e]">
-                <Loader2 className="h-3 w-3 animate-spin" /> indexing live…
+                <Loader2 className="h-3 w-3 animate-spin" /> syncing…
               </span>
             )}
           </p>
         </div>
 
-        {/* Timeframe Switcher */}
-        <div className="flex items-center gap-1 rounded-xl border border-slate-700/50 bg-[#090e1a] p-1">
-          {(['24h', '7d', '30d', 'all'] as TimeframeKey[]).map((tf) => (
-            <button
-              key={tf}
-              type="button"
-              onClick={() => setTimeframe(tf)}
-              className={`rounded-lg px-3 py-1.5 text-xs font-mono font-semibold uppercase transition-all ${
-                timeframe === tf
-                  ? 'sunrise-gradient-btn'
-                  : 'text-slate-400 hover:text-[#e8edfb]'
-              }`}
-            >
-              {tf}
-            </button>
-          ))}
+        {/* Timeframe Switcher + Sync Diagnostic Toggle */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setDiagOpen((o) => !o)}
+            aria-expanded={diagOpen}
+            className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-mono font-semibold transition-colors ${
+              diagOpen
+                ? 'border-[#46a6ff]/60 bg-[#46a6ff]/15 text-[#46a6ff]'
+                : 'border-slate-700/50 bg-[#090e1a] text-slate-300 hover:border-[#46a6ff]/50 hover:text-[#46a6ff]'
+            }`}
+          >
+            <Activity className="h-3.5 w-3.5" />
+            Sync Diagnostic
+          </button>
+
+          <div className="flex items-center gap-1 rounded-xl border border-slate-700/50 bg-[#090e1a] p-1">
+            {(['24h', '7d', '30d', 'all'] as TimeframeKey[]).map((tf) => (
+              <button
+                key={tf}
+                type="button"
+                onClick={() => setTimeframe(tf)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-mono font-semibold uppercase transition-all ${
+                  timeframe === tf
+                    ? 'sunrise-gradient-btn'
+                    : 'text-slate-400 hover:text-[#e8edfb]'
+                }`}
+              >
+                {tf}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
+
+      {error && !data && (
+        <div className="flex items-center justify-between rounded-xl border border-[#ff4d6d]/40 bg-[#ff4d6d]/10 px-4 py-3 text-xs text-[#ff4d6d]">
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => {
+              setLoading(true);
+              loadLeaderboard();
+            }}
+            className="rounded-lg border border-[#ff4d6d]/40 px-3 py-1 font-mono hover:bg-[#ff4d6d]/20"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {diagOpen && (
+        <LeaderboardSyncDiagnostic
+          targetTrader={diagTarget}
+          onTargetChange={setDiagTarget}
+          onClose={() => setDiagOpen(false)}
+          onSelectWallet={onSelectWallet}
+          onResynced={loadLeaderboard}
+        />
+      )}
 
       {/* Top 3 Podium */}
       {!loading && podiumOrder.length > 0 && (
@@ -198,12 +274,12 @@ export const LeaderboardPage: React.FC<{
               <div
                 key={trader.address}
                 onClick={() => onSelectWallet(trader.address)}
-                className={`sunrise-card cursor-pointer rounded-2xl p-5 transition-all hover:translate-y-[-2px] ${
+                className={`sunrise-card cursor-pointer rounded-xl p-4 transition-colors hover:border-slate-600 ${
                   rank === 1 ? 'order-1 md:order-2' : rank === 2 ? 'order-2 md:order-1' : 'order-3'
                 } ${
                   isFirst
-                    ? 'border-[#ffb02e]/60 shadow-[0_0_32px_rgba(255,176,46,0.14)] md:pb-7'
-                    : 'border-slate-700/45'
+                    ? 'border-[#ffb02e]/55 md:pb-5'
+                    : 'border-slate-800'
                 }`}
               >
                 <div className="flex items-start justify-between">
@@ -212,17 +288,17 @@ export const LeaderboardPage: React.FC<{
                       address={trader.address}
                       avatarUrl={trader.avatarUrl}
                       username={trader.username}
-                      size={isFirst ? 44 : 38}
+                      size={isFirst ? 40 : 36}
                     />
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
                         <span
-                          className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-mono font-bold ${
+                          className={`inline-flex items-center gap-1 text-xs font-mono font-bold ${
                             rank === 1
-                              ? 'bg-[#ffb02e]/20 text-[#ffb02e]'
+                              ? 'text-[#ffb02e]'
                               : rank === 2
-                                ? 'bg-slate-400/20 text-slate-200'
-                                : 'bg-[#ff6a3d]/20 text-[#ff6a3d]'
+                                ? 'text-slate-200'
+                                : 'text-[#ff6a3d]'
                           }`}
                         >
                           {rank === 1 && <Crown className="h-3 w-3" />}
@@ -240,24 +316,47 @@ export const LeaderboardPage: React.FC<{
                       </div>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onPeekTrader(trader.address, trader);
-                    }}
-                    className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-[#ffb02e]"
-                    title="Quick Peek"
-                  >
-                    <Eye className="h-4 w-4" />
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openDiagnosticFor(trader.username || trader.address);
+                      }}
+                      className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-[#46a6ff]"
+                      title="Compare snapshot vs live event logs"
+                      aria-label={`Sync diagnostic for ${trader.username || shortAddress(trader.address)}`}
+                    >
+                      <Activity className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onPeekTrader(trader.address, trader);
+                      }}
+                      className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-[#ffb02e]"
+                      title="Quick Peek"
+                      aria-label={`Quick peek ${trader.username || shortAddress(trader.address)}`}
+                    >
+                      <Eye className="h-4 w-4" />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="mt-4 grid grid-cols-3 gap-2 border-t border-slate-800/70 pt-3 font-mono tabular-nums">
                   <div>
                     <div className="text-[10px] uppercase text-slate-500">{timeframe.toUpperCase()} PnL</div>
-                    <div className={`text-sm font-bold ${periodPnl >= 0 ? 'text-[#22e0a1]' : 'text-[#ff4d6d]'}`}>
-                      {formatSignedUsd(periodPnl, true)}
+                    <div
+                      className={`text-sm font-bold ${
+                        periodPnl === null
+                          ? 'text-slate-500'
+                          : periodPnl >= 0
+                            ? 'text-[#22e0a1]'
+                            : 'text-[#ff4d6d]'
+                      }`}
+                    >
+                      {periodPnl !== null ? formatSignedUsd(periodPnl, true) : '—'}
                     </div>
                   </div>
                   <div>
@@ -449,10 +548,14 @@ export const LeaderboardPage: React.FC<{
                       </td>
                       <td
                         className={`py-3 px-2 text-right font-mono font-semibold ${
-                          periodPnl >= 0 ? 'text-[#22e0a1]' : 'text-[#ff4d6d]'
+                          periodPnl === null
+                            ? 'text-slate-500'
+                            : periodPnl >= 0
+                              ? 'text-[#22e0a1]'
+                              : 'text-[#ff4d6d]'
                         }`}
                       >
-                        {formatSignedUsd(periodPnl, true)}
+                        {periodPnl !== null ? formatSignedUsd(periodPnl, true) : '—'}
                       </td>
                       <td
                         className={`py-3 px-2 text-right font-mono ${
@@ -477,17 +580,32 @@ export const LeaderboardPage: React.FC<{
                         )}
                       </td>
                       <td className="py-3 pl-2 pr-4 text-right">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onPeekTrader(t.address, t);
-                          }}
-                          className="rounded-lg border border-slate-700/60 bg-[#090e1a] p-1.5 text-slate-300 hover:border-[#ffb02e]/60 hover:text-[#ffb02e]"
-                          title="Quick peek"
-                        >
-                          <Eye className="h-3.5 w-3.5" />
-                        </button>
+                        <div className="inline-flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openDiagnosticFor(t.username || t.address);
+                            }}
+                            className="rounded-lg border border-slate-700/60 bg-[#090e1a] p-1.5 text-slate-300 hover:border-[#46a6ff]/60 hover:text-[#46a6ff]"
+                            title="Compare Snapshot vs Live Events"
+                            aria-label={`Compare snapshot vs live events for ${t.username || shortAddress(t.address)}`}
+                          >
+                            <Activity className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onPeekTrader(t.address, t);
+                            }}
+                            className="rounded-lg border border-slate-700/60 bg-[#090e1a] p-1.5 text-slate-300 hover:border-[#ffb02e]/60 hover:text-[#ffb02e]"
+                            title="Quick peek"
+                            aria-label={`Quick peek ${t.username || shortAddress(t.address)}`}
+                          >
+                            <Eye className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );

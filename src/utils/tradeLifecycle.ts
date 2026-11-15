@@ -12,6 +12,70 @@ export function calcRoiPct(pnl: number, accountValue: number): number {
   return 0;
 }
 
+export function normalizeRealizedSide(side: unknown): 'LONG' | 'SHORT' {
+  const raw = String(side || '').toUpperCase().trim();
+  if (raw === 'SELL' || raw === 'SHORT' || raw === '1') return 'SHORT';
+  return 'LONG';
+}
+
+export interface RealizedEventSummary {
+  totalEvents: number;
+  netRealizedPnl: number;
+  grossProfit: number;
+  grossLoss: number;
+  totalFunding: number;
+  wins: number;
+  losses: number;
+  winRatePct: number;
+  profitFactor: number | null;
+  bestClose: number;
+  worstClose: number;
+}
+
+export function summarizeRealizedEvents(
+  events: { pnl?: unknown; realizedPnl?: unknown; funding?: unknown }[]
+): RealizedEventSummary {
+  let netRealizedPnl = 0;
+  let grossProfit = 0;
+  let grossLoss = 0;
+  let totalFunding = 0;
+  let wins = 0;
+  let losses = 0;
+  let bestClose = -Infinity;
+  let worstClose = Infinity;
+
+  for (const ev of events || []) {
+    const p = ev.realizedPnl !== undefined ? safeNum(ev.realizedPnl) : safeNum(ev.pnl);
+    const f = safeNum(ev.funding);
+    netRealizedPnl += p;
+    totalFunding += f;
+    if (p > 0) {
+      grossProfit += p;
+      wins++;
+    } else if (p < 0) {
+      grossLoss += p;
+      losses++;
+    }
+    if (p > bestClose) bestClose = p;
+    if (p < worstClose) worstClose = p;
+  }
+
+  const totalEvents = (events || []).length;
+  return {
+    totalEvents,
+    netRealizedPnl,
+    grossProfit,
+    grossLoss,
+    totalFunding,
+    wins,
+    losses,
+    winRatePct: wins + losses > 0 ? (wins / (wins + losses)) * 100 : 0,
+    profitFactor: grossLoss !== 0 ? grossProfit / Math.abs(grossLoss) : grossProfit > 0 ? null : 0,
+    bestClose: totalEvents > 0 ? bestClose : 0,
+    worstClose: totalEvents > 0 ? worstClose : 0,
+  };
+}
+
 export interface ReconstructedClosedTrade {
   id: string;
   marketId: string;

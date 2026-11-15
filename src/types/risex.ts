@@ -390,3 +390,150 @@ export interface SystemConfig {
   };
   addresses: Record<string, string>;
 }
+
+export type CohortTierId = 'whale' | 'shark' | 'dolphin' | 'fish' | 'shrimp';
+
+export interface CohortSummaryRow {
+  id: CohortTierId;
+  label: string;
+  thresholdDesc: string;
+  tradersCount: number;
+  activeTradersCount: number;
+  totalEquity: number;
+  totalNotional: number;
+  longNotional: number;
+  shortNotional: number;
+  biasPct: number;
+  biasLabel: 'NET LONG' | 'NET SHORT' | 'NEUTRAL';
+  avgLeverage: number;
+  netUnrealizedPnl: number;
+  netTotalPnl: number;
+  pctInProfit: number;
+}
+
+export interface PerformanceCohortRow {
+  id: 'top-winners' | 'profitable' | 'flat' | 'underwater';
+  label: string;
+  ruleDesc: string;
+  tradersCount: number;
+  activeTradersCount: number;
+  totalEquity: number;
+  longNotional: number;
+  shortNotional: number;
+  biasPct: number;
+  avgLeverage: number;
+  netUnrealizedPnl: number;
+}
+
+export interface MarketCohortRow {
+  marketId: string;
+  symbol: string;
+  displayName: string;
+  markPrice: number;
+  volume24h: number;
+  openInterestUsd: number;
+  fundingRate1hPct: number;
+  fundingAprPct: number;
+  totalIndexedNotional: number;
+  overallBiasPct: number;
+  whaleLong: number;
+  whaleShort: number;
+  whaleBiasPct: number;
+  dolphinBiasPct: number;
+  retailLong: number;
+  retailShort: number;
+  retailBiasPct: number;
+  divergencePct: number;
+  positionsCount: number;
+}
+
+export interface CohortPositionRow extends IndexedPositionRow {
+  cohort: CohortTierId;
+  cohortLabel: string;
+  distanceToLiqPct: number | null;
+}
+
+export interface CohortsAnalyticsResponse {
+  summary: {
+    enrichedTraders: number;
+    activeTradersWithPositions: number;
+    totalIndexedEquity: number;
+    totalIndexedNotional: number;
+    totalLongNotional: number;
+    totalShortNotional: number;
+    globalBiasPct: number;
+    totalMarketOiUsd: number;
+    totalMarketVolume24h: number;
+  };
+  sizeCohorts: CohortSummaryRow[];
+  performanceCohorts: PerformanceCohortRow[];
+  marketCohorts: MarketCohortRow[];
+  topPositions: CohortPositionRow[];
+  liquidationRadar: CohortPositionRow[];
+  updatedAt: number;
+}
+
+export type {
+  SyncDiagnosticStatus,
+  DiagnosticSnapshotSummary,
+  DiagnosticLiveSummary,
+  DiagnosticDriftMetrics,
+  DiagnosticRealizedEventRow,
+  DiagnosticTradeFillRow,
+  DiagnosticOnChainTxRow,
+  SyncDiagnosticReport,
+} from '../utils/pnlDiagnostic';
+
+export interface DefiLlamaTvlPoint {
+  date: number;
+  tvl: number;
+}
+
+export interface DefiLlamaSnapshot {
+  protocolTvl: number;
+  chainTvl: number;
+  tvl24hChangePct: number;
+  risexShareOfChainPct: number;
+  tvlHistory: DefiLlamaTvlPoint[];
+  chainTvlHistory: DefiLlamaTvlPoint[];
+  fetchedAt: number;
+}
+
+export interface OverviewBundleResponse {
+  totalVolume24h: number;
+  totalOpenInterestUsd: number;
+  activeMarketsCount: number;
+  totalMarketsCount: number;
+  totalDiscoveredCount: number;
+  indexedTradersCount: number;
+  totalEquityTracked: number;
+  totalOpenPositions: number;
+  blockNumber: number | null;
+  chainName: string;
+  chainId: string;
+  indexingInProgress: boolean;
+  lastRefresh: number;
+  defiLlama: DefiLlamaSnapshot | null;
+  profitability: {
+    totalAccounts: number;
+    enrichedAccounts: number;
+    inProfitCount: number;
+    atLossCount: number;
+    profitabilityPct: number;
+    totalEquityUsd: number;
+    totalPnlSumUsd: number;
+    longOiUsd: number;
+    shortOiUsd: number;
+    longPositionsCount: number;
+    shortPositionsCount: number;
+    longOiSharePct: number;
+  };
+  markets: (RisexMarket & {
+    indexedStats?: { count: number; longNotional: number; shortNotional: number };
+  })[];
+  topTraders: IndexedTrader[];
+  recentTrades: MarketTrade[];
+}
+
+
+

@@ -1,47 +1,21 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { ArrowDownUp, BarChart3, Search } from 'lucide-react';
-import type { RisexMarket } from '../types/risex';
+import { useMarketStream } from '../context/MarketWebSocketContext';
+import type { MarketWithStats } from '../utils/marketWsPatch';
 import { calcMarketChangePct, formatPct, formatPrice, formatUsd } from '../utils/format';
 import { MiniSparkline } from './Charts';
 import { TokenBadge } from './TraderAvatar';
-
-interface EnrichedMarket extends RisexMarket {
-  indexedStats?: {
-    count: number;
-    longNotional: number;
-    shortNotional: number;
-  };
-}
 
 type MarketSortKey = 'volume' | 'oi' | 'change' | 'funding' | 'price' | 'positions';
 
 export const MarketsPage: React.FC<{
   onSelectMarket: (marketId: string) => void;
 }> = ({ onSelectMarket }) => {
-  const [markets, setMarkets] = useState<EnrichedMarket[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { markets, loading, error, refreshSnapshot } = useMarketStream();
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('ALL');
   const [sortBy, setSortBy] = useState<MarketSortKey>('volume');
   const [sortDesc, setSortDesc] = useState(true);
-
-  const loadMarkets = () => {
-    fetch('/api/markets')
-      .then((r) => r.json())
-      .then((d) => d?.markets && setMarkets(d.markets))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    loadMarkets();
-    const timer = setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        loadMarkets();
-      }
-    }, 15000);
-    return () => clearInterval(timer);
-  }, []);
 
   const categories = useMemo(() => {
     const set = new Set<string>(['ALL']);
@@ -65,7 +39,7 @@ export const MarketsPage: React.FC<{
       return true;
     });
 
-    const getVal = (m: EnrichedMarket): number => {
+    const getVal = (m: MarketWithStats): number => {
       const mark = Number(m.mark_price || m.last_price || 0);
       switch (sortBy) {
         case 'volume':
@@ -140,6 +114,21 @@ export const MarketsPage: React.FC<{
         ))}
       </div>
 
+      {error && markets.length === 0 && (
+        <div className="flex items-center justify-between rounded-xl border border-[#ff4d6d]/40 bg-[#ff4d6d]/10 px-4 py-3 text-xs text-[#ff4d6d]">
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => {
+              void refreshSnapshot();
+            }}
+            className="rounded-lg border border-[#ff4d6d]/40 px-3 py-1 font-mono hover:bg-[#ff4d6d]/20"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
       {/* Markets Table */}
       <div className="sunrise-card overflow-hidden rounded-2xl">
         <div className="overflow-x-auto">
@@ -191,7 +180,7 @@ export const MarketsPage: React.FC<{
                     >
                       <td className="py-3 pl-4 pr-2">
                         <div className="flex items-center gap-2.5">
-                          <TokenBadge symbol={m.base_asset_symbol} size={26} />
+                          <TokenBadge symbol={m.base_asset_symbol} category={m.category} size={26} />
                           <div>
                             <div className="flex items-center gap-1.5">
                               <span className="font-display text-sm font-semibold text-[#e8edfb]">

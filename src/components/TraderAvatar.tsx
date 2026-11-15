@@ -96,54 +96,7 @@ export const TraderAvatar: React.FC<{
   );
 };
 
-const TOKEN_COLORS: Record<string, string> = {
-  BTC: '#f7931a',
-  ETH: '#627eea',
-  SOL: '#14f195',
-  RISE: '#ffb02e',
-  ARB: '#28a0f0',
-  OP: '#ff0420',
-  DOGE: '#c2a633',
-  XRP: '#38bdf8',
-  SUI: '#4da2ff',
-  AVAX: '#e84142',
-  LINK: '#375bd2',
-  BNB: '#f3ba2f',
-  HYPE: '#22e0a1',
-  PEPE: '#4ade80',
-  NVDA: '#76b900',
-  TSLA: '#e31937',
-  AAPL: '#cbd5e1',
-  GOLD: '#facc15',
-  XAU: '#facc15',
-  EUR: '#3b82f6',
-  JPY: '#ec4899',
-};
-
-export const TokenBadge: React.FC<{
-  symbol: string;
-  size?: number;
-}> = ({ symbol, size = 26 }) => {
-  const clean = (symbol || '?').replace(/\/.*$/, '').toUpperCase();
-  const h = hashStr(clean);
-  const bg =
-    TOKEN_COLORS[clean] ||
-    ['#ffb02e', '#ff6a3d', '#22e0a1', '#46a6ff', '#8b7bff', '#ff3d81'][h % 6];
-
-  return (
-    <span
-      className="inline-flex shrink-0 items-center justify-center rounded-full font-display font-bold text-[#05070d] shadow-inner"
-      style={{
-        width: size,
-        height: size,
-        backgroundColor: bg,
-        fontSize: Math.max(9, Math.floor(size * 0.38)),
-      }}
-    >
-      {clean.slice(0, 3)}
-    </span>
-  );
-};
+export { TokenBadge } from './TokenBadge';
 
 export function calcLiqDistancePct(
   markPrice: number,

@@ -51,48 +51,50 @@
   z-index: -2;
   pointer-events: none;
   background:
-    radial-gradient(1000px 540px at 88% -12%, rgba(255, 106, 61, 0.14), transparent 62%),
-    radial-gradient(900px 600px at -8% 5%, rgba(34, 224, 161, 0.08), transparent 60%),
-    radial-gradient(760px 700px at 58% 115%, rgba(139, 123, 255, 0.1), transparent 60%),
-    #05070d;
+    radial-gradient(900px 420px at 85% -15%, rgba(255, 176, 46, 0.06), transparent 65%),
+    #060911;
 }
 
 .sunrise-card {
-  background: linear-gradient(180deg, rgba(20, 29, 52, 0.74), rgba(13, 20, 38, 0.74));
-  border: 1px solid rgba(148, 163, 205, 0.15);
+  background: #0a0f1c;
+  border: 1px solid rgba(148, 163, 205, 0.13);
 }
 
 .sunrise-gradient-text {
-  background: linear-gradient(96deg, #ffb02e, #ff6a3d 48%, #ff3d81);
-  background-clip: text;
-  -webkit-background-clip: text;
-  color: transparent;
+  color: #ffb02e;
 }
 
 .sunrise-gradient-btn {
-  background: linear-gradient(96deg, #ffb02e, #ff6a3d 48%, #ff3d81);
-  color: #1f0e03;
-  box-shadow: 0 6px 22px rgba(255, 120, 60, 0.28);
+  background: #ffb02e;
+  color: #160a02;
 }
 
 .sunrise-gradient-btn:hover {
-  filter: brightness(1.08);
+  background: #ffbe4f;
 }
 
 @keyframes ticker-scroll {
   from {
-    transform: translateX(0);
+    transform: translate3d(0, 0, 0);
   }
   to {
-    transform: translateX(-50%);
+    transform: translate3d(-50%, 0, 0);
   }
+}
+
+.ticker-wrap {
+  mask-image: linear-gradient(to right, transparent, #000 20px, #000 calc(100% - 20px), transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 20px, #000 calc(100% - 20px), transparent);
 }
 
 .ticker-track {
   display: flex;
-  gap: 28px;
+  align-items: center;
+  gap: 8px;
   width: max-content;
-  animation: ticker-scroll 65s linear infinite;
+  will-change: transform;
+  backface-visibility: hidden;
+  animation: ticker-scroll 52s linear infinite;
 }
 
 .ticker-wrap:hover .ticker-track {

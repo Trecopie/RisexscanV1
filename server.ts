@@ -5,13 +5,18 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { nsToMs } from './src/utils/format.ts';
-import { calcRoiPct, reconstructTradeLifecycles, safeNum } from './src/utils/tradeLifecycle.ts';
+import { calcRoiPct, reconstructTradeLifecycles, safeNum, summarizeRealizedEvents } from './src/utils/tradeLifecycle.ts';
 import {
   buildConsistentPnlSeries,
+  computeRolling24hPnl,
   computeUtcPeriodPnl,
   normalizeCalendarAndPeriodMetrics,
   reconstructAccountEquitySeries,
 } from './src/utils/portfolioCurves.ts';
+import { buildCohortsAnalytics } from './src/utils/cohorts.ts';
+import { computeProfitabilitySummary } from './src/utils/overviewAnalytics.ts';
+import { extractWalletAddressesFromLogs, selectIndexerQueue } from './src/utils/indexerQueue.ts';
+import { buildTraderSyncDiagnostic } from './src/utils/pnlDiagnostic.ts';
 
 dotenv.config();
 
@@ -23,25 +28,35 @@ const RISE_RPC = 'https://rpc.risechain.com/';
 const RISE_EXPLORER_API = 'https://explorer.risechain.com/api/v2';
 const CACHE_FILE = path.join(__dirname, '.risex-index-cache.json');
 
-async function fetchJson(url: string, options: RequestInit = {}, timeoutMs = 10000): Promise<any> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      ...options,
-      signal: controller.signal,
-      headers: {
-        Accept: 'application/json',
-        ...(options.headers || {}),
-      },
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+let activeInteractiveRequests = 0;
+
+async function fetchJson(url: string, options: RequestInit = {}, timeoutMs = 10000, retries = 1): Promise<any> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+        headers: {
+          Accept: 'application/json',
+          ...(options.headers || {}),
+        },
+      });
+      if (res.status === 429 && attempt < retries) {
+        const retryAfter = Number(res.headers.get('retry-after')) || 0;
+        const waitMs = Math.min(2500, Math.max(700, retryAfter * 1000));
+        await new Promise((r) => setTimeout(r, waitMs));
+        continue;
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+      }
+      return await res.json();
+    } finally {
+      clearTimeout(timer);
     }
-    return await res.json();
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -184,13 +199,46 @@ async function cachedCall<T>(
   return cachedCallSWR(key, ttlMs, ttlMs, loader, maxEntries);
 }
 
+function invalidateLeaderboardAndCohortCaches() {
+  for (const k of Array.from(apiResponseCache.keys())) {
+    if (k.startsWith('leaderboard:') || k === 'cohorts:analytics') {
+      apiResponseCache.delete(k);
+    }
+  }
+}
+
+async function resolveAddressOrUsername(
+  rawParam: string
+): Promise<{ address: string; traderProfile: any | null } | null> {
+  const clean = rawParam.trim();
+  if (!clean) return null;
+  if (/^0x[a-fA-F0-9]{40}$/.test(clean)) {
+    return { address: clean, traderProfile: null };
+  }
+  const localMatch = Array.from(tradersMap.values()).find(
+    (t) => t.username && t.username.toLowerCase() === clean.toLowerCase()
+  );
+  if (localMatch) {
+    return { address: localMatch.address, traderProfile: null };
+  }
+  try {
+    const tr = await fetchJson(`${RISEX_API}/v1/traders/${encodeURIComponent(clean)}`);
+    if (tr?.data?.address && /^0x[a-fA-F0-9]{40}$/.test(tr.data.address)) {
+      return { address: tr.data.address, traderProfile: tr.data };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 function loadDiskCache() {
   try {
     if (!fs.existsSync(CACHE_FILE)) return;
     const raw = fs.readFileSync(CACHE_FILE, 'utf8');
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed?.traders)) {
-      const staleVersion = parsed.cacheVersion !== 2;
+      const staleVersion = parsed.cacheVersion !== 3;
       for (const t of parsed.traders) {
         if (t?.address) {
           tradersMap.set(
@@ -214,7 +262,7 @@ function loadDiskCache() {
 function saveDiskCache() {
   try {
     const payload = {
-      cacheVersion: 2,
+      cacheVersion: 3,
       lastIndexComplete,
       authCursor,
       cmCursor,
@@ -325,10 +373,11 @@ async function enrichWallet(address: string, sourceTag: string): Promise<TraderR
 
   try {
     const calls: Promise<any>[] = [
-      fetchJson(`${RISEX_API}/v1/portfolio/details?account=${norm}`),
-      fetchJson(`${RISEX_API}/v1/portfolio/header?account=${norm}`),
+      fetchJson(`${RISEX_API}/v1/portfolio/details?account=${norm}`, {}, 10000, 2),
+      fetchJson(`${RISEX_API}/v1/portfolio/header?account=${norm}`, {}, 10000, 2),
       fetchJson(`${RISEX_API}/v1/portfolio/stats?account=${norm}&period=30d`),
-      fetchJson(`${RISEX_API}/v1/portfolio/pnl-calendar?account=${norm}&period=1m`),
+      fetchJson(`${RISEX_API}/v1/portfolio/pnl-calendar?account=${norm}&period=1m`, {}, 10000, 2),
+      fetchJson(`${RISEX_API}/v1/portfolio/chart?account=${norm}&period=1D`, {}, 10000, 2),
     ];
     // Fetch RISEx account profile/username if we don't already have it
     const needProfile = !existing?.username;
@@ -336,7 +385,7 @@ async function enrichWallet(address: string, sourceTag: string): Promise<TraderR
       calls.push(fetchJson(`${RISEX_API}/v1/traders/${norm}`));
     }
 
-    const [detailsRes, headerRes, statsRes, calRes, profileRes] = await Promise.allSettled(calls);
+    const [detailsRes, headerRes, statsRes, calRes, chart1DRes, profileRes] = await Promise.allSettled(calls);
 
     const details = detailsRes.status === 'fulfilled' ? detailsRes.value?.data : null;
     if (!details || !details.summary) return null;
@@ -346,6 +395,7 @@ async function enrichWallet(address: string, sourceTag: string): Promise<TraderR
     const header = headerRes.status === 'fulfilled' ? headerRes.value?.data : null;
     const stats = statsRes.status === 'fulfilled' ? statsRes.value?.data : null;
     const cal = calRes.status === 'fulfilled' ? calRes.value?.data : null;
+    const chart1D = chart1DRes.status === 'fulfilled' ? chart1DRes.value?.data : null;
     const traderProf = profileRes && profileRes.status === 'fulfilled' ? profileRes.value?.data : null;
 
     const username = traderProf?.username || existing?.username || null;
@@ -401,7 +451,22 @@ async function enrichWallet(address: string, sourceTag: string): Promise<TraderR
     }
 
     const days: { date: string; pnl: string }[] = cal?.days || [];
-    const { pnl24h, pnl7d, pnl30d } = computeUtcPeriodPnl(days, [], Date.now());
+    const nowMs = Date.now();
+    const chart1DPoints: any[] = chart1D?.data || [];
+    let realizedFallback: any[] = [];
+    if (chart1DPoints.length < 2) {
+      const rpRes = await fetchJson(
+        `${RISEX_API}/v1/portfolio/realized-pnl?account=${norm}&limit=1000&page=1`
+      ).catch(() => null);
+      realizedFallback = rpRes?.data?.data || [];
+    }
+    const { pnl7d, pnl30d } = computeUtcPeriodPnl(days, realizedFallback, nowMs);
+    const pnl24h = computeRolling24hPnl({
+      upstreamPnl1D: chart1DPoints,
+      realizedEvents: realizedFallback,
+      calDays: days,
+      nowMs,
+    });
 
     const perf = stats?.performance;
     const winRate =
@@ -532,7 +597,7 @@ async function discoverAllTraders() {
               winRate: wr > 0 ? wr : null,
               source: `comp:${slug}`,
             });
-            if (comp.state === 'live' || offset === 0) {
+            if (comp.state === 'live') {
               addPriority(row.address);
             }
           }
@@ -550,13 +615,30 @@ async function discoverAllTraders() {
     // ignore competition fetch error
   }
 
-  // 3. Blockscout on-chain EOA senders & Auth/Collateral historical non-challenge wallets
+  // 3. Blockscout on-chain EOA senders, contract event logs (CollateralManager/Auth/OperatorHub) & historical cursors
   try {
     const cfg = await getSystemConfig().catch(() => null);
     const routerAddr = cfg?.addresses?.router || '0xaadde0cea454f2bcb26f46ed54c5709b7bb34a7e';
     const perpsAddr = cfg?.addresses?.perps_manager || '0x53f10facfc8965750494e6965f5d6da39b41d852';
+    const ordersAddr = cfg?.addresses?.orders_manager || '0xe03c1d5081eb2d0e6bfd62a949c5b12efa44f2cd';
     const collateralAddr = cfg?.addresses?.collateral_manager || '0x2c03c7d7e2974c6599b6b108879109281ef3f818';
+    const feeAddr = cfg?.addresses?.fee_manager || '0x11541dc387b9c307043ea732127df92b80bab52b';
     const authAddr = cfg?.addresses?.auth || '0x0d919daa3f12ae715744eb648c00066c5dbd66f0';
+    const operatorHubAddr = cfg?.addresses?.operator_hub || '0xf665aba90b6ac7515d50b12fcb4f350136726734';
+    const usdcAddr = cfg?.addresses?.usdc || '0xe436820ba0c69702c1d3e601d421c0ef38262739';
+    const knownContracts = [
+      routerAddr,
+      perpsAddr,
+      ordersAddr,
+      collateralAddr,
+      feeAddr,
+      authAddr,
+      operatorHubAddr,
+      usdcAddr,
+      cfg?.addresses?.oracle,
+      cfg?.addresses?.stork,
+      cfg?.addresses?.multicall3,
+    ].filter(Boolean) as string[];
 
     for (const cAddr of [routerAddr, perpsAddr]) {
       try {
@@ -570,6 +652,32 @@ async function discoverAllTraders() {
         }
       } catch {
         // ignore single contract error
+      }
+    }
+
+    // 3.0 Direct contract event logs (catches relayed deposits/withdraws & all auth/operator signers)
+    for (const [contractAddr, tag] of [
+      [collateralAddr, 'collateral-log'],
+      [authAddr, 'auth-log'],
+      [operatorHubAddr, 'operator-log'],
+    ] as const) {
+      try {
+        let logParams: Record<string, any> | null = null;
+        for (let page = 0; page < 2; page++) {
+          const qs = logParams
+            ? '?' + new URLSearchParams(Object.entries(logParams).map(([k, v]) => [k, String(v)])).toString()
+            : '';
+          const logsRes = await fetchJson(`${RISE_EXPLORER_API}/addresses/${contractAddr}/logs${qs}`, {}, 7000);
+          const extracted = extractWalletAddressesFromLogs(logsRes?.items || [], knownContracts);
+          for (const addr of extracted) {
+            seedDiscoveredTrader(addr, { source: tag });
+            addPriority(addr);
+          }
+          logParams = logsRes?.next_page_params || null;
+          if (!logParams) break;
+        }
+      } catch {
+        // ignore log fetch error
       }
     }
 
@@ -678,30 +786,20 @@ async function runBackgroundIndexer() {
     await getMarkets(true);
     const priorityList = await discoverAllTraders();
     const now = Date.now();
-    const PRIORITY_FRESH_MS = 10 * 60 * 1000;
+    const PRIORITY_FRESH_MS = 5 * 60 * 1000;
 
-    // Only re-enrich priority traders if stale (>10m) or not yet enriched, freeing capacity for historical backfill
-    const stalePriority = priorityList.filter((addr) => {
-      const t = tradersMap.get(addr.toLowerCase());
-      return !t || !t.portfolioEnriched || now - t.lastUpdated > PRIORITY_FRESH_MS;
-    });
-    const prioritySet = new Set(priorityList.map((p) => p.toLowerCase()));
-
-    // Sort remaining discovered wallets by staleness (unenriched first, then oldest)
-    const remaining = Array.from(tradersMap.values())
-      .filter((t) => !prioritySet.has(t.address.toLowerCase()))
-      .sort((a, b) => a.lastUpdated - b.lastUpdated)
-      .map((t) => t.address);
-
-    // Enrich stale priority traders + up to 300 historical traders per cycle
-    const queue = [...stalePriority.slice(0, 250), ...remaining.slice(0, 300)];
+    // Anti-starvation round-robin queue: unenriched active traders & legacy entries first, then oldest stale
+    const queue = selectIndexerQueue(priorityList, tradersMap, now, PRIORITY_FRESH_MS, 360, 220);
     const BATCH_SIZE = 4;
     for (let i = 0; i < queue.length; i += BATCH_SIZE) {
+      while (activeInteractiveRequests > 0) {
+        await new Promise((r) => setTimeout(r, 800));
+      }
       const batch = queue.slice(i, i + BATCH_SIZE);
       await Promise.allSettled(batch.map((addr) => enrichWallet(addr, 'indexer')));
-      // Save periodically
+      invalidateLeaderboardAndCohortCaches();
       if (i % 40 === 0 && i > 0) saveDiskCache();
-      await new Promise((r) => setTimeout(r, 1250));
+      await new Promise((r) => setTimeout(r, 1200));
     }
 
     lastIndexComplete = Date.now();
@@ -751,7 +849,7 @@ async function fetchAllTradeHistory(address: string): Promise<any[]> {
     if (page1.length < 200) return page1;
 
     const batch1 = await Promise.all(
-      [2, 3, 4, 5, 6].map((p) =>
+      [2, 3, 4].map((p) =>
         fetchJson(`${RISEX_API}/v1/trade-history?account=${address}&limit=200&page=${p}`)
           .then((r) => r?.data?.trades || [])
           .catch(() => [])
@@ -761,7 +859,7 @@ async function fetchAllTradeHistory(address: string): Promise<any[]> {
     if (batch1.some((b) => b.length < 200)) return all;
 
     const batch2 = await Promise.all(
-      [7, 8, 9, 10, 11, 12, 13, 14, 15].map((p) =>
+      [5, 6, 7, 8].map((p) =>
         fetchJson(`${RISEX_API}/v1/trade-history?account=${address}&limit=200&page=${p}`)
           .then((r) => r?.data?.trades || [])
           .catch(() => [])
@@ -847,6 +945,94 @@ async function fetchAllFundingPayments(address: string): Promise<any[]> {
   });
 }
 
+async function getDefiLlamaRiseData() {
+  return cachedCallSWR(
+    'defillama:risex',
+    120_000,
+    900_000,
+    async () => {
+      const [protoRes, chainRes] = await Promise.allSettled([
+        fetchJson('https://api.llama.fi/protocol/risex', {}, 9000, 1),
+        fetchJson('https://api.llama.fi/v2/historicalChainTvl/RISE', {}, 9000, 1),
+      ]);
+
+      const proto = protoRes.status === 'fulfilled' ? protoRes.value : null;
+      const chainArr: any[] =
+        chainRes.status === 'fulfilled' && Array.isArray(chainRes.value) ? chainRes.value : [];
+
+      const rawTvl: { date: number; totalLiquidityUSD: number }[] = Array.isArray(proto?.tvl)
+        ? proto.tvl
+        : [];
+      const tvlHistory = rawTvl
+        .map((p) => ({
+          date: safeNum(p.date) * 1000,
+          tvl: safeNum(p.totalLiquidityUSD),
+        }))
+        .filter((p) => p.date > 0 && p.tvl >= 0)
+        .slice(-120);
+
+      const chainTvlHistory = chainArr
+        .map((p: any) => ({
+          date: safeNum(p.date) * 1000,
+          tvl: safeNum(p.tvl),
+        }))
+        .filter((p) => p.date > 0 && p.tvl >= 0)
+        .slice(-120);
+
+      const currentProtoTvl =
+        safeNum(proto?.currentChainTvls?.RISE) ||
+        tvlHistory[tvlHistory.length - 1]?.tvl ||
+        0;
+      const prevProtoTvl =
+        tvlHistory.length >= 2 ? tvlHistory[tvlHistory.length - 2].tvl : currentProtoTvl;
+      const tvl24hChangePct =
+        prevProtoTvl > 0 ? ((currentProtoTvl - prevProtoTvl) / prevProtoTvl) * 100 : 0;
+
+      const currentChainTvl =
+        chainTvlHistory[chainTvlHistory.length - 1]?.tvl || 0;
+      const risexShareOfChainPct =
+        currentChainTvl > 0 ? Math.min(100, (currentProtoTvl / currentChainTvl) * 100) : 0;
+
+      return {
+        protocolTvl: currentProtoTvl,
+        chainTvl: currentChainTvl,
+        tvl24hChangePct,
+        risexShareOfChainPct,
+        tvlHistory,
+        chainTvlHistory,
+        fetchedAt: Date.now(),
+      };
+    }
+  );
+}
+
+async function getRecentMarketTrades() {
+  return cachedCallSWR('trades:recent', 4000, 20000, async () => {
+    const markets = await getMarkets();
+    const topMarkets = [...markets]
+      .sort((a, b) => safeNum(b.quote_volume_24h) - safeNum(a.quote_volume_24h))
+      .slice(0, 8);
+
+    const results = await Promise.allSettled(
+      topMarkets.map(async (m) => {
+        const r = await fetchJson(`${RISEX_API}/v1/markets/id/${m.market_id}/trade-history?limit=15`);
+        return (r?.data?.trades || []).map((t: any) => ({
+          ...t,
+          market_id: m.market_id,
+          market_name: m.display_name,
+        }));
+      })
+    );
+
+    const allTrades: any[] = [];
+    for (const r of results) {
+      if (r.status === 'fulfilled') allTrades.push(...r.value);
+    }
+    allTrades.sort((a, b) => nsToMs(b.time) - nsToMs(a.time));
+    return { trades: allTrades.slice(0, 80) };
+  });
+}
+
 async function startServer() {
   loadDiskCache();
 
@@ -905,53 +1091,97 @@ async function startServer() {
     runBackgroundIndexer();
   }, 120000);
 
-  // 1. Overview Pulse
+  // Pre-warm DefiLlama & recent trades cache cleanly in background
+  setTimeout(() => {
+    getDefiLlamaRiseData().catch(() => {});
+    getRecentMarketTrades().catch(() => {});
+  }, 600);
+
+  // 1. Unified Overview Pulse + DefiLlama + Markets + Top Traders + Recent Fills (4s SWR cached -> instant load)
   app.get('/api/overview', async (_req: Request, res: Response) => {
     try {
-      const [markets, config, rpcBlock] = await Promise.all([
-        getMarkets(),
-        getSystemConfig().catch(() => null),
-        cachedCall('rpc:blockNumber', 3000, () =>
-          fetchJson(
-            RISE_RPC,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] }),
-            },
-            5000
-          ).catch(() => null)
-        ),
-      ]);
+      const bundle = await cachedCallSWR('overview:bundle', 4000, 30000, async () => {
+        const [markets, config, rpcBlock, defiLlama, recentData] = await Promise.all([
+          getMarkets(),
+          getSystemConfig().catch(() => null),
+          cachedCall('rpc:blockNumber', 3000, () =>
+            fetchJson(
+              RISE_RPC,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] }),
+              },
+              5000
+            ).catch(() => null)
+          ),
+          getDefiLlamaRiseData().catch(() => null),
+          getRecentMarketTrades().catch(() => ({ trades: [] })),
+        ]);
 
-      let totalVolume24h = 0;
-      let totalOpenInterestUsd = 0;
-      for (const m of markets) {
-        totalVolume24h += safeNum(m.quote_volume_24h);
-        totalOpenInterestUsd += safeNum(m.open_interest) * safeNum(m.mark_price || m.last_price);
-      }
+        let totalVolume24h = 0;
+        let totalOpenInterestUsd = 0;
+        for (const m of markets) {
+          totalVolume24h += safeNum(m.quote_volume_24h);
+          totalOpenInterestUsd += safeNum(m.open_interest) * safeNum(m.mark_price || m.last_price);
+        }
 
-      const traders = Array.from(tradersMap.values());
-      const enriched = traders.filter((t) => t.portfolioEnriched);
-      const totalEquityTracked = enriched.reduce((s, t) => s + t.accountValue, 0);
-      const totalOpenPositions = enriched.reduce((s, t) => s + t.openPositionsCount, 0);
-      const blockNumber = rpcBlock?.result ? parseInt(rpcBlock.result, 16) : null;
+        const traders = Array.from(tradersMap.values());
+        const enriched = traders.filter((t) => t.portfolioEnriched);
+        const totalEquityTracked = enriched.reduce((s, t) => s + t.accountValue, 0);
+        const totalOpenPositions = enriched.reduce((s, t) => s + t.openPositionsCount, 0);
+        const blockNumber = rpcBlock?.result ? parseInt(rpcBlock.result, 16) : null;
 
-      res.json({
-        totalVolume24h,
-        totalOpenInterestUsd,
-        activeMarketsCount: markets.filter((m) => m.active).length,
-        totalMarketsCount: markets.length,
-        totalDiscoveredCount: traders.length,
-        indexedTradersCount: enriched.length,
-        totalEquityTracked,
-        totalOpenPositions,
-        blockNumber,
-        chainName: config?.chain?.name || 'Rise Mainnet',
-        chainId: config?.chain?.chain_id || '4153',
-        indexingInProgress: isIndexing,
-        lastRefresh: lastIndexComplete,
+        const posCounts = new Map<string, { count: number; longNotional: number; shortNotional: number }>();
+        for (const t of traders) {
+          for (const p of t.positions) {
+            const cur = posCounts.get(p.marketId) || { count: 0, longNotional: 0, shortNotional: 0 };
+            cur.count += 1;
+            if (p.side === 'LONG') cur.longNotional += p.notionalUsd;
+            else cur.shortNotional += p.notionalUsd;
+            posCounts.set(p.marketId, cur);
+          }
+        }
+
+        const enrichedMarkets = markets.map((m) => ({
+          ...m,
+          indexedStats: posCounts.get(String(m.market_id)) || {
+            count: 0,
+            longNotional: 0,
+            shortNotional: 0,
+          },
+        }));
+
+        const topTraders = [...traders]
+          .sort((a, b) => b.totalPnlAll - a.totalPnlAll)
+          .slice(0, 12)
+          .map(({ positions: _positions, ...rest }) => ({ ...rest, positions: [] }));
+
+        const profitability = computeProfitabilitySummary(traders);
+
+        return {
+          totalVolume24h,
+          totalOpenInterestUsd,
+          activeMarketsCount: markets.filter((m) => m.active).length,
+          totalMarketsCount: markets.length,
+          totalDiscoveredCount: traders.length,
+          indexedTradersCount: enriched.length,
+          totalEquityTracked,
+          totalOpenPositions,
+          blockNumber,
+          chainName: config?.chain?.name || 'Rise Mainnet',
+          chainId: config?.chain?.chain_id || '4153',
+          indexingInProgress: isIndexing,
+          lastRefresh: lastIndexComplete,
+          defiLlama,
+          profitability,
+          markets: enrichedMarkets,
+          topTraders,
+          recentTrades: (recentData?.trades || []).slice(0, 30),
+        };
       });
+
+      res.json(bundle);
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to load overview' });
     }
@@ -1057,6 +1287,127 @@ async function startServer() {
     res.json(payload);
   });
 
+  // 4b. Leaderboard Sync Diagnostic (Compares tradersMap cached snapshot vs live RISEx event logs & contract txs)
+  app.get('/api/leaderboard/diagnostic/:addressOrUsername', async (req: Request, res: Response) => {
+    try {
+      const rawParam = String(req.params.addressOrUsername || '').trim();
+      const shouldResync = req.query.resync === '1';
+      const resolved = await resolveAddressOrUsername(rawParam);
+      if (!resolved) {
+        res.status(404).json({ error: `Trader or wallet "${rawParam}" not found` });
+        return;
+      }
+
+      const { address, traderProfile: preProfile } = resolved;
+      const key = address.toLowerCase();
+      if (customSearchedWallets.size >= 500) {
+        const first = customSearchedWallets.values().next().value;
+        if (first) customSearchedWallets.delete(first);
+      }
+      customSearchedWallets.add(address);
+
+      let resynced = false;
+      if (shouldResync) {
+        const updated = await enrichWallet(address, 'diagnostic-resync');
+        if (updated) {
+          resynced = true;
+          invalidateLeaderboardAndCohortCaches();
+          apiResponseCache.delete(`wallet:full:${key}`);
+          apiResponseCache.delete(`wallet:lite:${key}`);
+        }
+      }
+
+      const snapshotEntry = tradersMap.get(key) || null;
+      activeInteractiveRequests++;
+      try {
+        const [
+          profileRes,
+          detailsRes,
+          chart1DRes,
+          calRes,
+          rpPage1Res,
+          rpPage2Res,
+          tradesRes,
+          onChainRes,
+          marketsList,
+        ] = await Promise.allSettled([
+          preProfile ? Promise.resolve({ data: preProfile }) : fetchJson(`${RISEX_API}/v1/traders/${address}`, {}, 9000, 1),
+          fetchJson(`${RISEX_API}/v1/portfolio/details?account=${address}`, {}, 10000, 2),
+          fetchJson(`${RISEX_API}/v1/portfolio/chart?account=${address}&period=1D`, {}, 10000, 2),
+          fetchJson(`${RISEX_API}/v1/portfolio/pnl-calendar?account=${address}&period=1m`, {}, 10000, 2),
+          fetchJson(`${RISEX_API}/v1/portfolio/realized-pnl?account=${address}&limit=1000&page=1`, {}, 10000, 1),
+          fetchJson(`${RISEX_API}/v1/portfolio/realized-pnl?account=${address}&limit=1000&page=2`, {}, 10000, 1),
+          fetchJson(`${RISEX_API}/v1/trade-history?account=${address}&limit=40&page=1`, {}, 9000, 1),
+          fetchJson(`${RISE_EXPLORER_API}/addresses/${address}/transactions`, {}, 8000, 1),
+          getMarkets(),
+        ]);
+
+        const profData = profileRes.status === 'fulfilled' ? profileRes.value?.data : null;
+        const details = detailsRes.status === 'fulfilled' ? detailsRes.value?.data : null;
+        const chart1D = chart1DRes.status === 'fulfilled' ? chart1DRes.value?.data?.data || [] : [];
+        const calDays = calRes.status === 'fulfilled' ? calRes.value?.data?.days || [] : [];
+        const rp1: any[] = rpPage1Res.status === 'fulfilled' ? rpPage1Res.value?.data?.data || [] : [];
+        const rp2: any[] =
+          rp1.length >= 1000 && rpPage2Res.status === 'fulfilled'
+            ? rpPage2Res.value?.data?.data || []
+            : [];
+        const realizedEvents = [...rp1, ...rp2];
+        const recentTrades = tradesRes.status === 'fulfilled' ? tradesRes.value?.data?.trades || [] : [];
+        const onChainTxs = onChainRes.status === 'fulfilled' ? onChainRes.value?.items || [] : [];
+        const markets = marketsList.status === 'fulfilled' ? marketsList.value : marketsCache;
+
+        const openPositionsCount = (details?.positions || []).filter(
+          (p: any) => Math.abs(safeNum(p.size)) > 0
+        ).length;
+
+        const report = buildTraderSyncDiagnostic({
+          query: rawParam,
+          resolvedAddress: details?.account || address,
+          username: profData?.username || snapshotEntry?.username || null,
+          avatarUrl:
+            profData?.avatar_url ||
+            profData?.x_account?.profile_image_url ||
+            snapshotEntry?.avatarUrl ||
+            null,
+          xHandle: profData?.x_account?.username || snapshotEntry?.xHandle || null,
+          snapshot: snapshotEntry
+            ? {
+                address: snapshotEntry.address,
+                username: snapshotEntry.username,
+                portfolioEnriched: snapshotEntry.portfolioEnriched,
+                lastUpdated: snapshotEntry.lastUpdated,
+                sources: snapshotEntry.sources,
+                pnl24h: snapshotEntry.pnl24h,
+                pnl7d: snapshotEntry.pnl7d,
+                pnl30d: snapshotEntry.pnl30d,
+                realizedPnlAll: snapshotEntry.realizedPnlAll,
+                unrealizedPnl: snapshotEntry.unrealizedPnl,
+                totalPnlAll: snapshotEntry.totalPnlAll,
+                accountValue: snapshotEntry.accountValue,
+                openPositionsCount: snapshotEntry.openPositionsCount,
+              }
+            : null,
+          detailsSummary: details?.summary || null,
+          openPositionsCount,
+          chart1DPoints: chart1D,
+          calDays,
+          realizedEvents,
+          realizedTotalFetched: realizedEvents.length,
+          recentTrades,
+          onChainTxs,
+          markets,
+          nowMs: Date.now(),
+        });
+
+        res.json({ ...report, resynced });
+      } finally {
+        activeInteractiveRequests = Math.max(0, activeInteractiveRequests - 1);
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to run trader sync diagnostic' });
+    }
+  });
+
   // 5. Liquidation Risk Feed (near-liquidation positions across all indexed traders)
   app.get('/api/liquidations', async (_req: Request, res: Response) => {
     const atRisk: (PositionRow & { distancePct: number })[] = [];
@@ -1072,6 +1423,19 @@ async function startServer() {
     }
     atRisk.sort((a, b) => a.distancePct - b.distancePct);
     res.json({ atRisk: atRisk.slice(0, 100), totalIndexed: tradersMap.size });
+  });
+
+  // 5b. Cohort & Bias Analytics (HyperTracker + RiseScreener live aggregation, 5s SWR cached)
+  app.get('/api/cohorts', async (_req: Request, res: Response) => {
+    try {
+      const payload = await cachedCallSWR('cohorts:analytics', 5000, 30000, async () => {
+        const markets = await getMarkets().catch(() => marketsCache);
+        return buildCohortsAnalytics(Array.from(tradersMap.values()), markets, Date.now());
+      });
+      res.json(payload);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to compute cohort analytics' });
+    }
   });
 
   // 6. Ticker Analytics + Sortable Open Positions
@@ -1146,12 +1510,12 @@ async function startServer() {
       const resolution = String(req.query.resolution || '1H');
 
       const intervalMap: Record<string, { ns: string; bars: number }> = {
-        '1m': { ns: '60000000000', bars: 120 },
-        '5m': { ns: '300000000000', bars: 120 },
-        '15m': { ns: '900000000000', bars: 120 },
-        '1H': { ns: '3600000000000', bars: 120 },
-        '4H': { ns: '14400000000000', bars: 120 },
-        '1D': { ns: '86400000000000', bars: 90 },
+        '1m': { ns: '60000000000', bars: 260 },
+        '5m': { ns: '300000000000', bars: 260 },
+        '15m': { ns: '900000000000', bars: 260 },
+        '1H': { ns: '3600000000000', bars: 260 },
+        '4H': { ns: '14400000000000', bars: 260 },
+        '1D': { ns: '86400000000000', bars: 260 },
       };
       const cfg = intervalMap[resolution] || intervalMap['1H'];
 
@@ -1240,33 +1604,10 @@ async function startServer() {
     }
   });
 
-  // 11. Global Recent Trade Tape (4s cached)
+  // 11. Global Recent Trade Tape (4s SWR cached)
   app.get('/api/trades/recent', async (_req: Request, res: Response) => {
     try {
-      const payload = await cachedCall('trades:recent', 4000, async () => {
-        const markets = await getMarkets();
-        const topMarkets = [...markets]
-          .sort((a, b) => safeNum(b.quote_volume_24h) - safeNum(a.quote_volume_24h))
-          .slice(0, 8);
-
-        const results = await Promise.allSettled(
-          topMarkets.map(async (m) => {
-            const r = await fetchJson(`${RISEX_API}/v1/markets/id/${m.market_id}/trade-history?limit=15`);
-            return (r?.data?.trades || []).map((t: any) => ({
-              ...t,
-              market_id: m.market_id,
-              market_name: m.display_name,
-            }));
-          })
-        );
-
-        const allTrades: any[] = [];
-        for (const r of results) {
-          if (r.status === 'fulfilled') allTrades.push(...r.value);
-        }
-        allTrades.sort((a, b) => nsToMs(b.time) - nsToMs(a.time));
-        return { trades: allTrades.slice(0, 80) };
-      });
+      const payload = await getRecentMarketTrades();
       res.json(payload);
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to load recent trades' });
@@ -1278,34 +1619,12 @@ async function startServer() {
     try {
       const rawParam = String(req.params.addressOrUsername).trim();
       const isLite = req.query.lite === '1';
-      let address = rawParam;
-      let traderProfile: any = null;
-
-      if (!/^0x[a-fA-F0-9]{40}$/.test(rawParam)) {
-        // Try local index by username first, then RISEx /v1/traders/{username}
-        const localMatch = Array.from(tradersMap.values()).find(
-          (t) => t.username && t.username.toLowerCase() === rawParam.toLowerCase()
-        );
-        if (localMatch) {
-          address = localMatch.address;
-        } else {
-          try {
-            const tr = await fetchJson(`${RISEX_API}/v1/traders/${encodeURIComponent(rawParam)}`);
-            if (tr?.data?.address) {
-              address = tr.data.address;
-              traderProfile = tr.data;
-            }
-          } catch {
-            res.status(404).json({ error: `Wallet or RISEx username "${rawParam}" not found` });
-            return;
-          }
-        }
-      }
-
-      if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
-        res.status(400).json({ error: 'Invalid wallet address or unknown RISEx username' });
+      const resolved = await resolveAddressOrUsername(rawParam);
+      if (!resolved) {
+        res.status(404).json({ error: `Wallet or RISEx username "${rawParam}" not found` });
         return;
       }
+      const { address, traderProfile } = resolved;
 
       if (customSearchedWallets.size >= 500) {
         const first = customSearchedWallets.values().next().value;
@@ -1378,6 +1697,7 @@ async function startServer() {
         return;
       }
 
+      activeInteractiveRequests++;
       const fullPayload = await cachedCallSWR(`wallet:full:${address.toLowerCase()}`, 15_000, 120_000, async () => {
         const [
           profileRes,
@@ -1401,17 +1721,17 @@ async function startServer() {
           marketsListRes,
         ] = await Promise.allSettled([
           traderProfile ? Promise.resolve({ data: traderProfile }) : fetchJson(`${RISEX_API}/v1/traders/${address}`),
-          fetchJson(`${RISEX_API}/v1/portfolio/details?account=${address}`),
-          fetchJson(`${RISEX_API}/v1/portfolio/header?account=${address}`),
+          fetchJson(`${RISEX_API}/v1/portfolio/details?account=${address}`, {}, 10000, 2),
+          fetchJson(`${RISEX_API}/v1/portfolio/header?account=${address}`, {}, 10000, 2),
           fetchJson(`${RISEX_API}/v1/portfolio/stats?account=${address}&period=7d`),
           fetchJson(`${RISEX_API}/v1/portfolio/stats?account=${address}&period=30d`),
           fetchJson(`${RISEX_API}/v1/portfolio/stats?account=${address}&period=all`),
-          fetchJson(`${RISEX_API}/v1/portfolio/chart?account=${address}&period=1D`),
+          fetchJson(`${RISEX_API}/v1/portfolio/chart?account=${address}&period=1D`, {}, 10000, 2),
           fetchJson(`${RISEX_API}/v1/portfolio/equity-chart?account=${address}&period=1D`),
           fetchJson(`${RISEX_API}/v1/portfolio/equity-chart?account=${address}&period=1W`),
           fetchJson(`${RISEX_API}/v1/portfolio/equity-chart?account=${address}&period=1M`),
           fetchJson(`${RISEX_API}/v1/portfolio/equity-chart?account=${address}&period=ALL`),
-          fetchJson(`${RISEX_API}/v1/portfolio/pnl-calendar?account=${address}&period=all-time`),
+          fetchJson(`${RISEX_API}/v1/portfolio/pnl-calendar?account=${address}&period=all-time`, {}, 10000, 2),
           fetchAllRealizedPnl(address),
           fetchAllTradeHistory(address),
           fetchJson(`${RISEX_API}/v1/orders/open?account=${address}&limit=100`),
@@ -1436,6 +1756,9 @@ async function startServer() {
         }
 
       const details = detailsRes.status === 'fulfilled' ? detailsRes.value?.data : null;
+      if (!details) {
+        throw new Error('RISEx API temporarily rate-limited while fetching wallet summary. Please retry.');
+      }
       const summary = details?.summary || null;
       const header = headerRes.status === 'fulfilled' ? headerRes.value?.data : null;
       const cal = calRes.status === 'fulfilled' ? calRes.value?.data : null;
@@ -1451,43 +1774,10 @@ async function startServer() {
         marketsList
       );
 
-      // Summarize metrics across completely closed trades
-      let netRealizedPnl = 0;
-      let grossProfit = 0;
-      let grossLoss = 0;
-      let totalFunding = 0;
-      let wins = 0;
-      let losses = 0;
-      let bestClose = -Infinity;
-      let worstClose = Infinity;
-      for (const ct of closedTrades) {
-        const p = ct.realizedPnl;
-        netRealizedPnl += p;
-        totalFunding += ct.funding;
-        if (p > 0) {
-          grossProfit += p;
-          wins++;
-        } else if (p < 0) {
-          grossLoss += p;
-          losses++;
-        }
-        if (p > bestClose) bestClose = p;
-        if (p < worstClose) worstClose = p;
-      }
-      const totalEvents = closedTrades.length;
-      const realizedSummary = {
-        totalEvents,
-        netRealizedPnl,
-        grossProfit,
-        grossLoss,
-        totalFunding,
-        wins,
-        losses,
-        winRatePct: wins + losses > 0 ? (wins / (wins + losses)) * 100 : 0,
-        profitFactor: grossLoss !== 0 ? grossProfit / Math.abs(grossLoss) : grossProfit > 0 ? null : 0,
-        bestClose: totalEvents > 0 ? bestClose : 0,
-        worstClose: totalEvents > 0 ? worstClose : 0,
-      };
+      // Summarize metrics across official RISEx realized PnL events (falls back to closedTrades if empty)
+      const realizedSummary = summarizeRealizedEvents(
+        realizedList.length > 0 ? realizedList : closedTrades
+      );
 
       const accountValue = safeNum(summary?.total_account_value);
       const realizedAll = safeNum(summary?.realized_pnl);
@@ -1531,9 +1821,82 @@ async function startServer() {
       const nowMs = Date.now();
       const pnl1DPoints = pnl1DRes.status === 'fulfilled' ? pnl1DRes.value?.data?.data || [] : [];
       const normalizedCal = normalizeCalendarAndPeriodMetrics(rawCalDays, realizedList, nowMs);
-      const pnl24h = normalizedCal.periodTotals['24h'];
+      const pnl24h = computeRolling24hPnl({
+        upstreamPnl1D: pnl1DPoints,
+        realizedEvents: realizedList,
+        calDays: normalizedCal.days,
+        nowMs,
+      });
       const pnl7d = normalizedCal.periodTotals['7d'];
       const pnl30d = normalizedCal.periodTotals['30d'];
+
+      // Sync ALL fresh live metrics back into tradersMap and invalidate cached leaderboard/cohorts
+      const resolvedAddr = details?.account || address;
+      const syncKey = address.toLowerCase();
+      const prevCached = tradersMap.get(syncKey);
+      const nextPnl24hRoi = accountValue > 0 ? calcRoiPct(pnl24h, accountValue) : null;
+      const nextPnl7dRoi = accountValue > 0 ? calcRoiPct(pnl7d, accountValue) : null;
+      const nextPnl30dRoi = accountValue > 0 ? calcRoiPct(pnl30d, accountValue) : null;
+      const nextRoiAll = accountValue > 0 ? calcRoiPct(totalPnlAll, accountValue) : 0;
+      const statsAllPerf = statsAllRes.status === 'fulfilled' ? statsAllRes.value?.data?.performance : null;
+      const stats30Perf = stats30dRes.status === 'fulfilled' ? stats30dRes.value?.data?.performance : null;
+      const activePerf = statsAllPerf || stats30Perf;
+      const freshRecord: TraderRecord = {
+        address: resolvedAddr,
+        username: mergedProfile?.username || prevCached?.username || null,
+        avatarUrl:
+          mergedProfile?.avatar_url ||
+          mergedProfile?.x_account?.profile_image_url ||
+          prevCached?.avatarUrl ||
+          null,
+        xHandle: mergedProfile?.x_account?.username || prevCached?.xHandle || null,
+        accountValue,
+        usdcBalance: safeNum(summary?.usdc_balance),
+        totalNotional: safeNum(summary?.total_notional),
+        accountLeverage: safeNum(summary?.account_leverage),
+        marginUsagePct: safeNum(summary?.margin_usage) * 100,
+        unrealizedPnl: unrealizedAll,
+        realizedPnlAll: realizedAll,
+        totalPnlAll,
+        roiAllPct: nextRoiAll,
+        pnl24h,
+        pnl7d,
+        pnl30d,
+        roi24hPct: nextPnl24hRoi,
+        roi7dPct: nextPnl7dRoi,
+        roi30dPct: nextPnl30dRoi,
+        volume24h: safeNum(header?.h24?.volume),
+        volume7d: safeNum(header?.d7?.volume),
+        volume30d: safeNum(header?.d30?.volume),
+        volumeAll: Math.max(safeNum(header?.all_time?.volume), prevCached?.volumeAll || 0),
+        volumeRank24h: safeNum(header?.h24?.volume_rank),
+        volumeRankAll: safeNum(header?.all_time?.volume_rank),
+        winRate:
+          activePerf?.win_rate !== undefined && activePerf?.win_rate !== ''
+            ? safeNum(activePerf.win_rate) * 100
+            : prevCached?.winRate ?? null,
+        sharpeRatio:
+          activePerf?.sharpe_ratio !== undefined && activePerf?.sharpe_ratio !== ''
+            ? safeNum(activePerf.sharpe_ratio)
+            : prevCached?.sharpeRatio ?? null,
+        maxDrawdown:
+          activePerf?.max_drawdown !== undefined && activePerf?.max_drawdown !== ''
+            ? safeNum(activePerf.max_drawdown) * 100
+            : prevCached?.maxDrawdown ?? null,
+        profitFactor:
+          activePerf?.profit_factor && activePerf.profit_factor !== 'Infinity'
+            ? safeNum(activePerf.profit_factor)
+            : prevCached?.profitFactor ?? null,
+        openPositionsCount: positions.length,
+        positions,
+        riskLevel: summary?.risk_level || prevCached?.riskLevel || 'NORMAL',
+        inLiquidation: Boolean(summary?.in_liquidation),
+        portfolioEnriched: true,
+        lastUpdated: Date.now(),
+        sources: Array.from(new Set([...(prevCached?.sources || []), 'wallet-view'])),
+      };
+      tradersMap.set(syncKey, freshRecord);
+      invalidateLeaderboardAndCohortCaches();
 
       const transfersData =
         transfersRes.status === 'fulfilled'
@@ -1573,7 +1936,7 @@ async function startServer() {
           summary,
           positions,
           closedTrades,
-          tradesCapped: allTradesList.length >= 3000,
+          tradesCapped: allTradesList.length >= 1600,
           header,
           statsByPeriod: {
             '7d': stats7dRes.status === 'fulfilled' ? stats7dRes.value?.data : null,
@@ -1635,6 +1998,8 @@ async function startServer() {
       res.json(fullPayload);
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to fetch wallet profile' });
+    } finally {
+      activeInteractiveRequests = Math.max(0, activeInteractiveRequests - 1);
     }
   });
 

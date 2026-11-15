@@ -48,24 +48,38 @@ export const ExplorerPage: React.FC<{
   const [txResult, setTxResult] = useState<any>(null);
   const [txLoading, setTxLoading] = useState(false);
 
+  const abortRef = React.useRef<AbortController | null>(null);
+  const txAbortRef = React.useRef<AbortController | null>(null);
+
   const loadExplorer = async () => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const safeJson = async (url: string) => {
+      const r = await fetch(url, { signal: controller.signal });
+      if (!r.ok) return null;
+      return r.json();
+    };
     try {
-      const [ovRes, trRes, liqRes, mkRes] = await Promise.all([
-        fetch('/api/explorer/overview').then((r) => r.json()),
-        fetch('/api/trades/recent').then((r) => r.json()),
-        fetch('/api/liquidations').then((r) => r.json()),
-        fetch('/api/markets').then((r) => r.json()),
+      const [ovRes, trRes, liqRes, mkRes] = await Promise.allSettled([
+        safeJson('/api/explorer/overview'),
+        safeJson('/api/trades/recent'),
+        safeJson('/api/liquidations'),
+        safeJson('/api/markets'),
       ]);
-      if (ovRes?.blocks) setBlocks(ovRes.blocks);
-      if (ovRes?.transactions) setTxs(ovRes.transactions);
-      if (ovRes?.systemConfig) setSystemConfig(ovRes.systemConfig);
-      if (trRes?.trades) setRecentTrades(trRes.trades);
-      if (liqRes?.atRisk) setAtRisk(liqRes.atRisk);
-      if (mkRes?.markets) setMarkets(mkRes.markets);
+      if (controller.signal.aborted) return;
+      if (ovRes.status === 'fulfilled' && ovRes.value) {
+        if (ovRes.value.blocks) setBlocks(ovRes.value.blocks);
+        if (ovRes.value.transactions) setTxs(ovRes.value.transactions);
+        if (ovRes.value.systemConfig) setSystemConfig(ovRes.value.systemConfig);
+      }
+      if (trRes.status === 'fulfilled' && trRes.value?.trades) setRecentTrades(trRes.value.trades);
+      if (liqRes.status === 'fulfilled' && liqRes.value?.atRisk) setAtRisk(liqRes.value.atRisk);
+      if (mkRes.status === 'fulfilled' && mkRes.value?.markets) setMarkets(mkRes.value.markets);
     } catch {
       // ignore
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   };
 
@@ -76,22 +90,30 @@ export const ExplorerPage: React.FC<{
         loadExplorer();
       }
     }, 15000);
-    return () => clearInterval(timer);
+    return () => {
+      abortRef.current?.abort();
+      txAbortRef.current?.abort();
+      clearInterval(timer);
+    };
   }, []);
 
   const inspectHash = async (hash: string) => {
     const clean = hash.trim();
     if (!clean) return;
+    txAbortRef.current?.abort();
+    const controller = new AbortController();
+    txAbortRef.current = controller;
     setTxInput(clean);
     setSubTab('decoder');
     setTxLoading(true);
     try {
-      const res = await fetch(`/api/explorer/tx/${encodeURIComponent(clean)}`).then((r) => r.json());
-      setTxResult(res);
+      const r = await fetch(`/api/explorer/tx/${encodeURIComponent(clean)}`, { signal: controller.signal });
+      const res = await r.json();
+      if (!controller.signal.aborted) setTxResult(res);
     } catch (err: any) {
-      setTxResult({ error: err.message });
+      if (err?.name !== 'AbortError') setTxResult({ error: err.message });
     } finally {
-      setTxLoading(false);
+      if (!controller.signal.aborted) setTxLoading(false);
     }
   };
 

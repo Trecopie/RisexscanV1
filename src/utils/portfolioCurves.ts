@@ -158,6 +158,40 @@ export function computeUtcPeriodPnl(
   };
 }
 
+/**
+ * Computes rolling 24h PnL matching RISEx's official `/v1/portfolio/chart?period=1D`
+ * and 24h leaderboard rankings (`now - 24h` to `now`).
+ * Falls back cleanly to rolling 24h realized-pnl events, then UTC calendar today.
+ */
+export function computeRolling24hPnl(params: {
+  upstreamPnl1D?: ChartPointData[];
+  realizedEvents?: RealizedPnlInput[];
+  calDays?: PnlCalendarDayInput[];
+  nowMs?: number;
+}): number {
+  const { upstreamPnl1D = [], realizedEvents = [], calDays = [], nowMs = Date.now() } = params;
+  const cutoff24h = nowMs - DAY_MS;
+
+  const valid1D = (upstreamPnl1D || [])
+    .map((p) => ({ ms: nsToMs(p.timestamp), val: safeFloat(p.value) }))
+    .filter((p) => p.ms > 0 && Number.isFinite(p.val))
+    .sort((a, b) => a.ms - b.ms);
+
+  if (valid1D.length >= 2) {
+    return valid1D[valid1D.length - 1].val - valid1D[0].val;
+  }
+
+  const recentRpnl = (realizedEvents || [])
+    .map((r) => ({ ms: nsToMs(r.timestamp), pnl: safeFloat(r.pnl) }))
+    .filter((r) => r.ms >= cutoff24h && r.ms <= nowMs);
+
+  if (recentRpnl.length > 0 && (realizedEvents || []).length < 10000) {
+    return recentRpnl.reduce((sum, r) => sum + r.pnl, 0);
+  }
+
+  return normalizeCalendarAndPeriodMetrics(calDays, realizedEvents, nowMs).periodTotals['24h'];
+}
+
 function toChartPoint(ms: number, value: number): ChartPointData {
   const clean = Math.abs(value) < 1e-6 ? 0 : value;
   return {
@@ -458,12 +492,27 @@ export function buildConsistentPnlSeries(params: {
     .filter((r) => r.ms > 0)
     .sort((a, b) => a.ms - b.ms);
 
+  const rolling24hStart = nowMs - DAY_MS;
+
   const build1D = (): ChartPointData[] => {
-    const todayRpnl = parsedRpnl.filter((r) => r.ms >= todayStart && r.ms <= nowMs);
-    if (todayRpnl.length > 0) {
-      const pts: { ms: number; value: number }[] = [{ ms: todayStart, value: 0 }];
+    const valid = upstreamPnl1D
+      .map((p) => ({ ms: nsToMs(p.timestamp), val: safeFloat(p.value) }))
+      .filter((p) => p.ms >= rolling24hStart - 3_600_000)
+      .sort((a, b) => a.ms - b.ms);
+    if (valid.length >= 2) {
+      const base = valid[0].val;
+      const rebased = valid.map((p) => ({ ms: p.ms, value: p.val - base }));
+      if (Math.abs(rebased[rebased.length - 1].value - periodPnl['24h']) > 0.01) {
+        rebased.push({ ms: nowMs, value: periodPnl['24h'] });
+      }
+      return downsampleWithExtrema(rebased).map((p) => toChartPoint(p.ms, p.value));
+    }
+
+    const recentRpnl = parsedRpnl.filter((r) => r.ms >= rolling24hStart && r.ms <= nowMs);
+    if (recentRpnl.length > 0) {
+      const pts: { ms: number; value: number }[] = [{ ms: rolling24hStart, value: 0 }];
       let cum = 0;
-      for (const r of todayRpnl) {
+      for (const r of recentRpnl) {
         cum += r.pnl;
         pts.push({ ms: r.ms, value: cum });
       }
@@ -471,17 +520,7 @@ export function buildConsistentPnlSeries(params: {
       return downsampleWithExtrema(pts).map((p) => toChartPoint(p.ms, p.value));
     }
 
-    const valid = upstreamPnl1D
-      .map((p) => ({ ms: nsToMs(p.timestamp), val: safeFloat(p.value) }))
-      .filter((p) => p.ms >= todayStart)
-      .sort((a, b) => a.ms - b.ms);
-    if (valid.length >= 2) {
-      const base = valid[0].val;
-      const rebased = valid.map((p) => ({ ms: p.ms, value: p.val - base }));
-      rebased.push({ ms: nowMs, value: periodPnl['24h'] });
-      return downsampleWithExtrema(rebased).map((p) => toChartPoint(p.ms, p.value));
-    }
-    return [toChartPoint(todayStart, 0), toChartPoint(nowMs, periodPnl['24h'])];
+    return [toChartPoint(rolling24hStart, 0), toChartPoint(nowMs, periodPnl['24h'])];
   };
 
   const buildRelativeWindow = (windowStartMs: number, targetEndPnl: number): ChartPointData[] => {
