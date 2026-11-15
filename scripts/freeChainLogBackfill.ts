@@ -6,6 +6,7 @@
  * These are RAW contract events, NOT decoded fills, wallet PnL or venue totals.
  */
 import {Pool} from 'pg';
+import {contractCreationHash} from '../src/utils/blockscoutCreation.ts';
 
 const API='https://api.rise.trade';
 const EXPLORER='https://explorer.risechain.com/api/v2';
@@ -81,9 +82,23 @@ async function verifiedDeployment(role:string,address:string,systemConfig:unknow
     console.warn(role+': Blockscout does not recognize this as a contract; skipped.');
     return null;
   }
-  const creationHash=info?.creation_tx_hash;
+  let creationHash=info?.creation_tx_hash;
   if(typeof creationHash!=='string'||!/^0x[0-9a-f]{64}$/i.test(creationHash)){
-    console.warn(role+': creation transaction not verifiable via free explorer; skipped.');
+    // Contract creation can occur through a factory. Blockscout's v2 address
+    // endpoint may omit the creation_tx_hash even when the official legacy
+    // getcontractcreation action has an explicit address->tx mapping.
+    const params=new URLSearchParams({
+      module:'contract',action:'getcontractcreation',contractaddresses:address,
+    });
+    try{
+      const legacy=await fetchJson('https://explorer.risechain.com/api?'+params);
+      creationHash=contractCreationHash(legacy,address);
+    }catch(err){
+      console.warn(role+': contract creator lookup unavailable: '+String(err).slice(0,110));
+    }
+  }
+  if(typeof creationHash!=='string'||!/^0x[0-9a-f]{64}$/i.test(creationHash)){
+    console.warn(role+': neither Blockscout v2 nor legacy returned an address-matched creation transaction.');
     return null;
   }
   const tx=await fetchJson(EXPLORER+'/transactions/'+creationHash);
