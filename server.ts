@@ -1131,7 +1131,7 @@ async function getDefiLlamaRiseData() {
           tvl: safeNum(p.totalLiquidityUSD),
         }))
         .filter((p) => p.date > 0 && p.tvl >= 0)
-        .slice(-120);
+        .slice(-730); // Preserve all currently available protocol history, not only 120d.
 
       const chainTvlHistory = chainArr
         .map((p: any) => ({
@@ -1139,7 +1139,7 @@ async function getDefiLlamaRiseData() {
           tvl: safeNum(p.tvl),
         }))
         .filter((p) => p.date > 0 && p.tvl >= 0)
-        .slice(-120);
+        .slice(-730); // Preserve all currently available protocol history, not only 120d.
 
       const currentProtoTvl =
         safeNum(proto?.currentChainTvls?.RISE) ||

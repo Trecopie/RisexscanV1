@@ -20,8 +20,9 @@ const shortTime=(ms:number,withHour:boolean)=>{
   return withHour?d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):
     d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
 };
-const ChartCard:React.FC<{title:string;source:string;color:string;points:Point[];period:Period}> =
-({title,source,color,points,period})=>{
+const ChartCard:React.FC<{title:string;source:string;color:string;points:Point[];period:Period;unit?:'usd'|'count'}> =
+({title,source,color,points,period,unit='usd'})=>{
+  const pretty=(value:number)=>unit==='count'?Math.max(0,Math.round(value)).toLocaleString():formatUsd(value,true);
   // Cumulative values are calculated over the entire observed history first;
   // filtering only trims the viewport and never resets the running total.
   const cutoff=period==='ALL'?Number.NEGATIVE_INFINITY:Date.now()-PERIOD_DAYS[period]*86400000;
@@ -50,7 +51,7 @@ const ChartCard:React.FC<{title:string;source:string;color:string;points:Point[]
         <p className="mt-1 font-mono text-[10px] text-slate-500">{source}</p>
       </div>
       <span className="font-mono text-lg font-bold tabular-nums" style={{color}}>
-        {last?formatUsd(last.value,true):'—'}
+        {last?pretty(last.value):'—'}
       </span>
     </div>
     {n>1?<svg className="mt-3 h-[170px] w-full" viewBox="0 0 460 130"
@@ -58,7 +59,7 @@ const ChartCard:React.FC<{title:string;source:string;color:string;points:Point[]
       aria-label={`${title}, ${n} recorded points from ${shortTime(first.time,false)} to ${shortTime(last!.time,false)}`}>
       {ticks.map((t,i)=><g key={i}>
         <line x1={x0} x2={x1} y1={t.y} y2={t.y} stroke="#243147" strokeDasharray="3 4" strokeWidth=".7"/>
-        <text x="452" y={t.y+3} textAnchor="end" fill="#64748b" fontSize="10">{formatUsd(t.value,true)}</text>
+        <text x="452" y={t.y+3} textAnchor="end" fill="#64748b" fontSize="10">{pretty(t.value)}</text>
       </g>)}
       <path d={area} fill={color} opacity=".12"/>
       <path d={line} fill="none" stroke={color} strokeWidth="2.5"
@@ -78,7 +79,6 @@ const ChartCard:React.FC<{title:string;source:string;color:string;points:Point[]
 export const HistoricalInsights:React.FC=()=>{
   const [period,setPeriod]=useState<Period>('30D');
   const [history,setHistory]=useState<History|null>(null);
-  const [tvl,setTvl]=useState<Point[]>([]);
   const [historyError,setHistoryError]=useState(false);
 
   useEffect(()=>{
@@ -92,24 +92,11 @@ export const HistoricalInsights:React.FC=()=>{
         if(!controller.signal.aborted){setHistory(payload);setHistoryError(false);}
       }catch{if(!controller.signal.aborted)setHistoryError(true);}
     };
-    const getTvl=async()=>{
-      if(document.visibilityState==='hidden')return;
-      try{
-        const r=await fetch('/api/analytics/protocol-tvl',{signal:controller.signal});
-        if(!r.ok)return;
-        const payload=await r.json();
-        if(!controller.signal.aborted && Array.isArray(payload.tvlHistory)){
-          setTvl(payload.tvlHistory.filter((p:any)=>
-            Number.isFinite(p.date)&&Number.isFinite(p.tvl)&&p.tvl>=0)
-            .map((p:any)=>({time:p.date,value:p.tvl})));
-        }
-      }catch{/* TVL is optional and independent of RISEx persistence. */}
-    };
-    void getHistory();void getTvl();
-    const onVisibility=()=>{if(document.visibilityState==='visible'){void getHistory();void getTvl();}};
+    void getHistory();
+    const onVisibility=()=>{if(document.visibilityState==='visible')void getHistory();};
     document.addEventListener('visibilitychange',onVisibility);
-    const a=setInterval(getHistory,60000),b=setInterval(getTvl,180000);
-    return()=>{controller.abort();clearInterval(a);clearInterval(b);
+    const a=setInterval(getHistory,60000);
+    return()=>{controller.abort();clearInterval(a);
       document.removeEventListener('visibilitychange',onVisibility);};
   },[]);
 
@@ -124,6 +111,7 @@ export const HistoricalInsights:React.FC=()=>{
     return {
       oi:(history?.oiSnapshots??[]).map(d=>({time:d.time,value:d.openInterestUsd})),
       daily:daily.map(d=>({time:d.day,value:d.volumeUsd})),
+      dailyTrades:daily.map(d=>({time:d.day,value:d.tradeCount})),
       cumulativeVolume,cumulativeFees
     };
   },[history]);
@@ -132,7 +120,7 @@ export const HistoricalInsights:React.FC=()=>{
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h2 className="font-display text-lg font-bold text-[#e8edfb]">Historical Market Analytics</h2>
-        <p className="mt-1 text-xs text-slate-400">RISEx market observations and DefiLlama protocol TVL</p>
+        <p className="mt-1 text-xs text-slate-400">Recorded RISEx history · protocol TVL is displayed below</p>
       </div>
       <div className="flex items-center gap-2">
         <div role="group" aria-label="History time range" className="flex rounded-lg border border-slate-800 bg-[#070b14] p-0.5">
@@ -146,7 +134,7 @@ export const HistoricalInsights:React.FC=()=>{
           <div className="absolute right-0 top-full z-20 mt-2 w-72 rounded-xl border border-slate-700 bg-[#101727] p-3 text-[11px] leading-relaxed text-slate-300 shadow-xl sm:w-96">
             <p><strong>RISEx OI:</strong> hourly sum of public REST market OI × mark; exchange counting convention has not been reconciled against DefiLlama.</p>
             <p className="mt-1"><strong>Observed volume/fees:</strong> deduplicated public trades saved since collection began. Not complete venue-wide lifetime totals.</p>
-            <p className="mt-1"><strong>TVL:</strong> independent historical protocol values from DefiLlama, not open interest.</p>
+            <p className="mt-1"><strong>TVL:</strong> The single, full-range DefiLlama chart appears in the Protocol TVL section below.</p>
             <a href="https://defillama.com/protocol/risex" target="_blank" rel="noopener noreferrer"
               className="mt-2 inline-block text-[#46a6ff] underline">DefiLlama reference</a>
           </div>
@@ -163,13 +151,13 @@ export const HistoricalInsights:React.FC=()=>{
         color="#46a6ff" points={charts.cumulativeVolume} period={period}/>
     </div>
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-      <ChartCard title="Protocol TVL" source="DefiLlama · Historical verified TVL"
-        color="#8b7bff" points={tvl} period={period}/>
+      <ChartCard title="Recorded Trade Count" source="RISEx · Distinct recorded trade IDs"
+        color="#8b7bff" points={charts.dailyTrades} period={period} unit="count"/>
       <ChartCard title="Reported Trading Fees" source="RISEx · Recorded fees only"
         color="#20c5aa" points={charts.cumulativeFees} period={period}/>
     </div>
     {history?.coverage?.databaseConnected===false &&<p className="text-xs text-[#ffb02e]">
-      Local RISEx history unavailable; independent DefiLlama TVL can still be viewed.
+      Local RISEx history unavailable; the independent Protocol TVL chart remains available below.
     </p>}
   </section>;
 };
