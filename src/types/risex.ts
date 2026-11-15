@@ -319,6 +319,8 @@ export interface WalletProfileData {
   closedTrades: ClosedTradeRecord[];
   tradesCapped?: boolean;
   realizedEventsCapped?: boolean;
+  realizedDataAvailable?: boolean;
+  tradeHistoryAvailable?: boolean;
   unverifiedCyclesCount?: number;
   unattributedRealizedEvents?: number;
   header: PortfolioHeader | null;
