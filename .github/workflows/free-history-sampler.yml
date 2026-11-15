@@ -1,0 +1,49 @@
+name: Free RISEx market history sampler
+
+# Runs independently of Render, so database snapshots can continue while the
+# website sleeps. The workflow is inert until DATABASE_URL is configured.
+# Private repository: deliberately run every 2 hours (~360 runs/month), not
+# every 15 minutes (~2,880/month), to preserve GitHub's included compute.
+# GitHub's schedule is best effort: jobs may be delayed or skipped.
+on:
+  schedule:
+    - cron: '17 */2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: risex-free-history-sampler
+  cancel-in-progress: false
+
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      RISEX_DB_SOFT_LIMIT_BYTES: '700000000'
+    steps:
+      - name: Checkout published code
+        uses: actions/checkout@v4
+      - name: Configure Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Check optional free database configuration
+        id: config
+        shell: bash
+        run: |
+          if [ -n "$DATABASE_URL" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "No DATABASE_URL secret yet. Free history capture safely disabled."
+          fi
+      - name: Install dependencies
+        if: steps.config.outputs.enabled == 'true'
+        run: npm install --no-audit --no-fund
+      - name: Sample official RISEx market data and bounded recent trades
+        if: steps.config.outputs.enabled == 'true'
+        run: npx tsx scripts/freeHistorySampler.ts

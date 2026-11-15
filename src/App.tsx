@@ -9,6 +9,7 @@ import { WalletPage } from './components/WalletPage';
 import { ExplorerPage } from './components/ExplorerPage';
 import { TraderPeekDrawer } from './components/TraderPeekDrawer';
 import { MarketWebSocketProvider, useMarketStream } from './context/MarketWebSocketContext';
+import { DataFreshnessStrip } from './components/DataFreshnessStrip';
 import type { IndexedTrader } from './types/risex';
 import { isValidAddress, isValidTxHash } from './utils/format';
 
@@ -199,6 +200,7 @@ function AppContent() {
         onSelectMarket={handleSelectMarket}
         markets={markets}
       />
+      <DataFreshnessStrip />
 
       <main className="mx-auto w-full max-w-[1440px] flex-1 px-4 py-6 sm:px-6">
         {searchNotice && (

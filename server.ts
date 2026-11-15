@@ -13,11 +13,13 @@ import {
   normalizeCalendarAndPeriodMetrics,
   reconstructAccountEquitySeries,
 } from './src/utils/portfolioCurves.ts';
-import { buildCohortsAnalytics } from './src/utils/cohorts.ts';
+import { buildCohortsAnalytics, classifyTraderCohort } from './src/utils/cohorts.ts';
 import { computeProfitabilitySummary } from './src/utils/overviewAnalytics.ts';
 import { extractWalletAddressesFromLogs, selectIndexerQueue } from './src/utils/indexerQueue.ts';
 import { buildTraderSyncDiagnostic } from './src/utils/pnlDiagnostic.ts';
 import { LIQUIDATION_ALERT_PCT, LIQUIDATION_CANDIDATE_PCT, liquidationDistancePct } from './src/utils/liquidationRisk.ts';
+import { normalizeRpcBlocks } from './src/utils/liveChain.ts';
+import { HistoryStore, type ObservedTradeRecord } from './src/utils/historyStore.ts';
 
 dotenv.config();
 
@@ -126,8 +128,22 @@ interface TraderRecord {
 // In-memory store
 let marketsCache: any[] = [];
 let marketsUpdatedAt = 0;
+let lastMarketHistorySample = 0;
+let lastPositionHistorySample = 0;
+let tradeFeedConnected = false;
+let lastObservedTradeAt = 0;
+let droppedTradeEvents = 0;
 let systemConfigCache: any = null;
 const tradersMap = new Map<string, TraderRecord>();
+const historyStore = new HistoryStore();
+const changedTraders = new Set<string>();
+
+function putTrader(address: string, row: TraderRecord) {
+  const key = address.toLowerCase();
+  tradersMap.set(key, row);
+  changedTraders.add(key);
+}
+
 const customSearchedWallets = new Set<string>();
 let isIndexing = false;
 let lastIndexComplete = 0;
@@ -261,22 +277,74 @@ function loadDiskCache() {
   }
 }
 
+let persistQueue = Promise.resolve();
 function saveDiskCache() {
+  const metadata = {
+    cacheVersion: 3,
+    lastIndexComplete,
+    authCursor,
+    cmCursor,
+    authBackfillComplete,
+    cmBackfillComplete,
+  };
+  if (historyStore.ready) {
+    const dirtyKeys = [...changedTraders];
+    changedTraders.clear();
+    const records = dirtyKeys.map((key) => tradersMap.get(key)).filter((t):t is TraderRecord=>Boolean(t));
+    persistQueue = persistQueue
+      .then(async () => {
+        await historyStore.upsertTraders(records);
+        await historyStore.saveState(metadata);
+      })
+      .catch((err) => {
+        for (const key of dirtyKeys) changedTraders.add(key);
+        console.error('Persistent index save failed:', err);
+      });
+    return;
+  }
   try {
-    const payload = {
-      cacheVersion: 3,
-      lastIndexComplete,
-      authCursor,
-      cmCursor,
-      authBackfillComplete,
-      cmBackfillComplete,
-      traders: Array.from(tradersMap.values()),
-    };
+    const payload = {...metadata,traders:Array.from(tradersMap.values())};
     const tmpFile = `${CACHE_FILE}.tmp`;
     fs.writeFileSync(tmpFile, JSON.stringify(payload));
     fs.renameSync(tmpFile, CACHE_FILE);
   } catch {
-    // ignore write errors on ephemeral/read-only filesystems
+    // ephemeral local fallback; PostgreSQL is required for durable history.
+  }
+}
+
+async function restoreIndexAtStartup():Promise<void>{
+  await historyStore.initialize();
+  if (!historyStore.ready) {
+    loadDiskCache();
+    return;
+  }
+  try {
+    const state=await historyStore.loadState();
+    if (state) {
+      lastIndexComplete=Number(state.lastIndexComplete||0);
+      authCursor=state.authCursor||null;
+      cmCursor=state.cmCursor||null;
+      authBackfillComplete=Boolean(state.authBackfillComplete);
+      cmBackfillComplete=Boolean(state.cmBackfillComplete);
+    }
+    const count=await historyStore.loadTraders((rows) => {
+      for (const trader of rows) {
+        if (trader?.address) tradersMap.set(trader.address.toLowerCase(),trader as TraderRecord);
+      }
+    });
+    // First DB-enabled deployment may have an existing local checkpoint. Import
+    // it once rather than throwing away a previously discovered wallet universe.
+    if (count === 0 && fs.existsSync(CACHE_FILE)) {
+      loadDiskCache();
+      for (const key of tradersMap.keys()) changedTraders.add(key);
+      saveDiskCache();
+      console.log(`Importing ${tradersMap.size} historical wallet records into PostgreSQL`);
+    } else {
+      console.log(`Restored ${count} traders from persistent PostgreSQL index`);
+    }
+  } catch(err) {
+    console.error('Postgres restore failed; using local fallback:',err);
+    loadDiskCache();
   }
 }
 
@@ -289,6 +357,23 @@ async function getMarkets(force = false): Promise<any[]> {
   if (list.length > 0) {
     marketsCache = list;
     marketsUpdatedAt = Date.now();
+    if (historyStore.ready && Date.now() - lastMarketHistorySample > 3_600_000) {
+      lastMarketHistorySample = Date.now();
+      const sampledAt = lastMarketHistorySample;
+      const samples = list.filter((m:any) => m.active !== false)
+        .map((m:any) => ({
+          marketId:String(m.market_id),
+          observedAt:sampledAt,
+          openInterestUsd:safeNum(m.open_interest)*safeNum(m.mark_price || m.last_price),
+          volume24hUsd:safeNum(m.quote_volume_24h),
+          fundingRate:safeNum(m.current_funding_rate),
+          markPrice:safeNum(m.mark_price || m.last_price),
+        }));
+      historyStore.recordMarketSamples(samples).catch((err) => {
+        lastMarketHistorySample = 0;
+        console.error('Market sample persistence warning:',err);
+      });
+    }
   }
   return marketsCache;
 }
@@ -324,11 +409,12 @@ function seedDiscoveredTrader(
       existing.totalPnlAll = meta.realizedPnl;
     }
     if (!existing.sources.includes(meta.source)) existing.sources.push(meta.source);
+    changedTraders.add(key);
     return;
   }
 
   const rPnl = meta.realizedPnl ?? 0;
-  tradersMap.set(key, {
+  putTrader(key, {
     address: address.trim(),
     username: meta.username || null,
     avatarUrl: meta.avatarUrl || null,
@@ -529,7 +615,7 @@ async function enrichWallet(address: string, sourceTag: string): Promise<TraderR
       sources,
     };
 
-    tradersMap.set(key, record);
+    putTrader(key, record);
     return record;
   } catch {
     return null;
@@ -805,6 +891,31 @@ async function runBackgroundIndexer() {
     }
 
     lastIndexComplete = Date.now();
+    if (historyStore.ready && Date.now() - lastPositionHistorySample > 3_600_000) {
+      lastPositionHistorySample = Date.now();
+      const grouped=new Map<string,{
+        marketId:string;cohort:'whale'|'shark'|'dolphin'|'fish'|'shrimp';
+        observedAt:number;longUsd:number;shortUsd:number;positions:number
+      }>();
+      for (const trader of tradersMap.values()) {
+        if (!trader.portfolioEnriched) continue;
+        const cohort=classifyTraderCohort(trader.accountValue,trader.totalNotional);
+        for (const pos of trader.positions) {
+          const key=`${pos.marketId}:${cohort}`;
+          const record=grouped.get(key)||{
+            marketId:pos.marketId,cohort,observedAt:Date.now(),longUsd:0,shortUsd:0,positions:0,
+          };
+          if(pos.side==='LONG') record.longUsd+=pos.notionalUsd;
+          else record.shortUsd+=pos.notionalUsd;
+          record.positions++;
+          grouped.set(key,record);
+        }
+      }
+      await historyStore.recordCohortSnapshots([...grouped.values()]).catch(err=>{
+        lastPositionHistorySample=0;
+        console.error('Position snapshot persistence warning:',err);
+      });
+    }
     saveDiskCache();
   } catch (err) {
     console.error('Indexer cycle warning:', err);
@@ -1035,12 +1146,134 @@ async function getRecentMarketTrades() {
   });
 }
 
+/**
+ * Public RISEx trade observer for forward-looking volume/fee analytics.
+ * A disconnected/sleeping collector MUST NOT be represented as a complete
+ * trade history. Idempotent DB keys dedupe repeated WebSocket messages.
+ */
+function startObservedTradeCollector() {
+  if (!historyStore.ready || typeof WebSocket === 'undefined') return;
+  let ws: WebSocket | null = null;
+  let attempts = 0;
+  let closed = false;
+  let flushing = false;
+  let reconnect: ReturnType<typeof setTimeout> | null = null;
+  let buffer: ObservedTradeRecord[] = [];
+  const flush = async () => {
+    if (flushing || !buffer.length) return;
+    flushing = true;
+    const batch = buffer.splice(0, 1000);
+    try {
+      await historyStore.recordTrades(batch);
+    } catch (err) {
+      // Retain bounded queued data when DB is temporarily unreachable.
+      buffer = [...batch, ...buffer].slice(0, 12000);
+      console.error('Observed RISEx trade persistence warning:', err);
+    } finally {
+      flushing = false;
+    }
+  };
+  const interval = setInterval(() => { void flush(); }, 1500);
+  const connect = () => {
+    if (closed) return;
+    try {
+      const socket = new WebSocket('wss://ws.rise.trade/ws');
+      ws = socket;
+      socket.addEventListener('open', () => {
+        tradeFeedConnected = true;
+        attempts = 0;
+        socket.send(JSON.stringify({method:'subscribe',params:{channel:'trades'}}));
+      });
+      socket.addEventListener('message', (message) => {
+        try {
+          const frame = JSON.parse(String(message.data));
+          if (frame?.channel !== 'trades') return;
+          const marketId=String(frame.market_id ?? '');
+          const items=Array.isArray(frame.data) ? frame.data : frame.data?.trades ?? [frame.data];
+          for (const item of items) {
+            const id=String(item?.id ?? '');
+            const price=safeNum(item?.price), size=safeNum(item?.size);
+            if (!/^\d+$/.test(marketId) || !id || price<=0 || size<=0) continue;
+            const feeFields=[item.fee_maker,item.fee_taker,item.fee_liquidation]
+              .filter((value:unknown)=>value !== null && value !== undefined && value !== '');
+            const reportedFee=feeFields.length > 0
+              ? feeFields.reduce((sum:number,value:unknown)=>sum+safeNum(value),0) : null;
+            const ts=nsToMs(frame.worker_timestamp ?? frame.timestamp ?? frame.block_timestamp ?? Date.now());
+            const timestampMs=ts > 0 ? ts : Date.now();
+            if (buffer.length >= 12000) {
+              buffer.shift();
+              droppedTradeEvents++;
+            }
+            const maker=String(item?.maker||'');
+            const taker=String(item?.taker||'');
+            const makerSide=Number(item?.maker_side);
+            if (/^0x[a-fA-F0-9]{40}$/.test(maker)) {
+              seedDiscoveredTrader(maker,{source:'live-trade-maker'});
+            }
+            if (/^0x[a-fA-F0-9]{40}$/.test(taker)) {
+              seedDiscoveredTrader(taker,{source:'live-trade-taker'});
+            }
+            buffer.push({
+              marketId,tradeId:id,timestampMs,
+              notionalUsd:price*size,feeUsd:reportedFee,
+              maker:/^0x[a-fA-F0-9]{40}$/.test(maker)?maker.toLowerCase():null,
+              taker:/^0x[a-fA-F0-9]{40}$/.test(taker)?taker.toLowerCase():null,
+              makerSide:Number.isInteger(makerSide) && (makerSide===0||makerSide===1)?makerSide:null,
+              price:String(item.price),size:String(item.size),
+            });
+            lastObservedTradeAt=Date.now();
+          }
+        } catch {
+          // Ignore malformed frames without injecting fabricated trade events.
+        }
+      });
+      socket.addEventListener('close', () => {
+        if (ws !== socket) return;
+        tradeFeedConnected = false;
+        ws = null;
+        if (!closed) reconnect = setTimeout(connect, Math.min(60000,1500*2**Math.min(6,attempts++)));
+      });
+      socket.addEventListener('error', () => { socket.close(); });
+    } catch {
+      tradeFeedConnected = false;
+      if (!closed) reconnect = setTimeout(connect, Math.min(60000,1500*2**Math.min(6,attempts++)));
+    }
+  };
+  connect();
+  const shutdown = () => {
+    closed=true;
+    if (reconnect)clearTimeout(reconnect);
+    clearInterval(interval);
+    ws?.close();
+    void flush();
+  };
+  process.once('SIGTERM',shutdown);
+  process.once('SIGINT',shutdown);
+}
+
 async function startServer() {
-  loadDiskCache();
+  await restoreIndexAtStartup();
+  startObservedTradeCollector();
 
   const app = express();
   app.set('trust proxy', 1);
-  app.use(express.json());
+  app.use(express.json({limit:'32kb'}));
+  // All RISEx venue market IDs are numeric. Validate before interpolating
+  // identifiers into upstream URLs to avoid endpoint/path manipulation.
+  app.param('marketId',(req:Request,res:Response,next,value:string)=>{
+    if(!/^\d{1,6}$/.test(value)){
+      res.status(400).json({error:'Invalid market ID'});
+      return;
+    }
+    next();
+  });
+  app.param('addressOrUsername',(req:Request,res:Response,next,value:string)=>{
+    if(value.length>120){
+      res.status(400).json({error:'Account query is too long'});
+      return;
+    }
+    next();
+  });
 
   // Public security headers (allow iframe preview in AI Studio while hardening MIME/referrer)
   app.use((_req, res, next) => {
@@ -1048,6 +1281,68 @@ async function startServer() {
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     next();
   });
+
+  // Bounded in-memory API latency telemetry. No wallet addresses or search
+  // query strings are stored; Express route patterns group dynamic IDs.
+  const apiPerf = new Map<string,{durations:number[];requests:number;errors:number}>();
+  app.use('/api', (req,res,next) => {
+    const start=performance.now();
+    res.once('finish', () => {
+      // Never retain user-controlled wallet names, tx hashes, or addresses.
+      // Express route patterns are set after a matching handler runs; group
+      // unmatched paths into 'unmatched' rather than saving raw URL components.
+      const route = req.route?.path;
+      const path = typeof route === 'string' ? route : 'unmatched';
+      if (path === '/monitoring/performance') return;
+      const entry=apiPerf.get(path) || {durations:[],requests:0,errors:0};
+      entry.requests++;
+      if (res.statusCode >= 400) entry.errors++;
+      entry.durations.push(Math.round(performance.now()-start));
+      if (entry.durations.length > 300) entry.durations.shift();
+      if (apiPerf.size >= 70 && !apiPerf.has(path)) apiPerf.delete(apiPerf.keys().next().value!);
+      apiPerf.set(path,entry);
+    });
+    next();
+  });
+  app.get('/api/monitoring/performance', (_req,res) => {
+    const percentile = (rows:number[], pct:number) =>
+      rows.length ? rows[Math.floor((rows.length-1)*pct)] : 0;
+    const metrics=[...apiPerf.entries()].map(([route,v]) => {
+      const ordered=[...v.durations].sort((a,b)=>a-b);
+      return {
+        route, requests:v.requests, errorRatePct: +(v.errors/v.requests*100).toFixed(1),
+        p50Ms:percentile(ordered,0.50),p95Ms:percentile(ordered,0.95),
+        maxMs:ordered[ordered.length-1] || 0,
+        sampleSize:ordered.length,
+      };
+    }).sort((a,b)=>b.p95Ms-a.p95Ms);
+    res.setHeader('Cache-Control','no-store');
+    res.json({fetchedAt:Date.now(),uptimeSec:Math.round(process.uptime()),metrics});
+  });
+
+  // Heavy account diagnostics can request 9+ upstream calls and optional
+  // forced trader resync. Bound them separately from ordinary price APIs;
+  // otherwise an anonymous visitor could exhaust free-provider quotas.
+  const diagnosticBudget=new Map<string,{count:number;resetAt:number}>();
+  const resyncBudget=new Map<string,{count:number;resetAt:number}>();
+  function permitCostlyRequest(budget:Map<string,{count:number;resetAt:number}>,
+      ip:string,limit:number,windowMs:number):{allowed:boolean;retryAfterSec:number}{
+    const now=Date.now();
+    const current=budget.get(ip);
+    if(!current || current.resetAt<=now){
+      if(budget.size>2500){
+        for(const [key,value]of budget)if(value.resetAt<=now)budget.delete(key);
+      }
+      budget.set(ip,{count:1,resetAt:now+windowMs});
+      return {allowed:true,retryAfterSec:0};
+    }
+    if(current.count>=limit)return {
+      allowed:false,
+      retryAfterSec:Math.max(1,Math.ceil((current.resetAt-now)/1000)),
+    };
+    current.count++;
+    return {allowed:true,retryAfterSec:0};
+  }
 
   // Lightweight sliding-window per-IP rate limiter for /api/*
   const ipHits = new Map<string, { count: number; resetAt: number }>();
@@ -1074,6 +1369,51 @@ async function startServer() {
       return;
     }
     next();
+  });
+
+  app.get('/api/analytics/position-changes',async(_req:Request,res:Response)=>{
+    try {
+      const result=await cachedCallSWR('analytics:position-changes',60000,120000,
+        ()=>historyStore.getPositionChanges());
+      res.json({...result,indexedTraders:tradersMap.size,
+        note:'Changes are sampled from enriched indexed accounts, not proof of executed buys or sells.'});
+    }catch(err:any){
+      res.status(503).json({error:err?.message||'Position changes unavailable'});
+    }
+  });
+
+  app.get('/api/analytics/history', async (_req:Request,res:Response) => {
+    try {
+      const payload=await cachedCallSWR('analytics:history',30_000,60_000,
+        () => historyStore.getHistoricalAnalytics());
+      res.json({
+        ...payload,
+        liveCollector:{connected:tradeFeedConnected,lastTradeAt:lastObservedTradeAt||null,droppedInMemory:droppedTradeEvents},
+      });
+    } catch(err:any) {
+      res.status(503).json({error:err?.message||'History analytics unavailable'});
+    }
+  });
+
+  app.get('/api/data/freshness', async (_req:Request,res:Response) => {
+    res.setHeader('Cache-Control','no-store');
+    const storage=await historyStore.storageStatus().catch(()=>null);
+    res.json({
+      fetchedAt:Date.now(),
+      databaseStorageBytes:storage?.usedBytes ?? null,
+      databaseSoftLimitBytes:storage?.limitBytes ?? null,
+      databaseTradeWritesPaused:storage?.writeLimited ?? false,
+      marketsRestUpdatedAt:marketsUpdatedAt || null,
+      walletIndexCompletedAt:lastIndexComplete || null,
+      indexedTraders:tradersMap.size,
+      enrichedTraders:Array.from(tradersMap.values()).filter(t=>t.portfolioEnriched).length,
+      databaseConnected:historyStore.ready,
+      tradesWsConnected:tradeFeedConnected,
+      lastObservedTradeAt:lastObservedTradeAt || null,
+      tradeEventsDropped:droppedTradeEvents,
+      historicalCoverageComplete:false,
+      note:'Wallet discovery is progressive; recorded trade/fee history may have gaps during downtime or when the public REST history window is capped.',
+    });
   });
 
   app.get('/api/health', (_req: Request, res: Response) => {
@@ -1293,7 +1633,21 @@ async function startServer() {
   app.get('/api/leaderboard/diagnostic/:addressOrUsername', async (req: Request, res: Response) => {
     try {
       const rawParam = String(req.params.addressOrUsername || '').trim();
+      if(rawParam.length>120){
+        res.status(400).json({error:'Trader query is too long'});
+        return;
+      }
       const shouldResync = req.query.resync === '1';
+      const ip=String(req.ip||req.socket.remoteAddress||'unknown');
+      const diagnosticGate=permitCostlyRequest(diagnosticBudget,ip,8,60000);
+      const resyncGate=shouldResync
+        ?permitCostlyRequest(resyncBudget,ip,2,600000)
+        :{allowed:true,retryAfterSec:0};
+      if(!diagnosticGate.allowed || !resyncGate.allowed){
+        res.setHeader('Retry-After',String(Math.max(diagnosticGate.retryAfterSec,resyncGate.retryAfterSec)));
+        res.status(429).json({error:'Trader diagnostic rate limit; try again later.'});
+        return;
+      }
       const resolved = await resolveAddressOrUsername(rawParam);
       if (!resolved) {
         res.status(404).json({ error: `Trader or wallet "${rawParam}" not found` });
@@ -1581,6 +1935,38 @@ async function startServer() {
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to load candles' });
     }
+  });
+
+  // Real 24h OHLCV-based mini charts, requested in batches to avoid 18+
+  // client fetches. Never synthesize sine-wave price series from % change.
+  app.get('/api/markets/sparklines', async (req:Request,res:Response) => {
+    const ids=String(req.query.ids||'').split(',').map(v=>v.trim())
+      .filter(v=>/^\d{1,6}$/.test(v)).slice(0,30);
+    const unique=[...new Set(ids)];
+    if (!unique.length) {res.json({series:{},fetchedAt:Date.now()});return;}
+    const now=Date.now();
+    const toNs=(BigInt(now)*1000000n).toString();
+    const fromNs=(BigInt(now-40*3600000)*1000000n).toString();
+    const series:Record<string,{points:Array<{time:number;price:number}>;lastCandleAt:number|null}>={};
+    for(let offset=0;offset<unique.length;offset+=6){
+      const batch=await Promise.allSettled(unique.slice(offset,offset+6).map(async (id)=>{
+        const result=await cachedCall(`sparkline:${id}`,300000,async()=>{
+          const tv=await fetchJson(`${RISEX_API}/v1/markets/id/${id}/trading-view-data?interval=3600000000000&from=${fromNs}&to=${toNs}`,{},9000,0);
+          const values=(tv?.data?.data||[]).map((c:any)=>({
+            time:nsToMs(c.time),
+            value:safeNum(c.close),
+          })).filter((p:{time:number;value:number}) => p.time > now-86400000 && p.time <= now+300000 && p.value>0)
+            .sort((a:{time:number},b:{time:number})=>a.time-b.time);
+          return {
+            points:values.slice(-30).map((p:{time:number;value:number})=>({time:p.time,price:p.value})),
+            lastCandleAt:values[values.length-1]?.time||null,
+          };
+        });
+        return [id,result] as const;
+      }));
+      for(const result of batch) if(result.status==='fulfilled')series[result.value[0]]=result.value[1];
+    }
+    res.json({series,fetchedAt:Date.now(),source:'RISEx 1H OHLCV'});
   });
 
   // 8. Orderbook (2s cached)
@@ -1945,7 +2331,7 @@ async function startServer() {
         lastUpdated: Date.now(),
         sources: Array.from(new Set([...(prevCached?.sources || []), 'wallet-view'])),
       };
-      tradersMap.set(syncKey, freshRecord);
+      putTrader(syncKey, freshRecord);
       invalidateLeaderboardAndCohortCaches();
 
       const transfersData =
@@ -2113,6 +2499,41 @@ async function startServer() {
       res.json(payload);
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to load explorer data' });
+    }
+  });
+
+  // RPC tip is independent of the asynchronously indexed Blockscout feed.
+  // All visitors share a 1.5s cache; this avoids per-browser RPC hammering.
+  app.get('/api/chain/live', async (_req: Request, res: Response) => {
+    try {
+      const payload = await cachedCall('chain:rpc:live', 1500, async () => {
+        const rpc = (method: string, params: unknown[]) =>
+          fetchJson(RISE_RPC, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+          }, 4000, 0);
+        const headResponse = await rpc('eth_getBlockByNumber', ['latest', false]);
+        if (headResponse?.error || !headResponse?.result?.number) {
+          throw new Error('RISE RPC did not return a current block');
+        }
+        const head = Number.parseInt(headResponse.result.number, 16);
+        const earlier = await Promise.allSettled(
+          [1, 2, 3, 4].filter((n) => head >= n).map((n) =>
+            rpc('eth_getBlockByNumber', ['0x' + (head - n).toString(16), false])
+              .then((response) => response?.result || null)
+          )
+        );
+        return normalizeRpcBlocks([
+          headResponse.result,
+          ...earlier.map((result) => result.status === 'fulfilled' ? result.value : null),
+        ]);
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(payload);
+    } catch (err: any) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(503).json({ error: err?.message || 'RISE RPC unavailable', source: 'rpc' });
     }
   });
 

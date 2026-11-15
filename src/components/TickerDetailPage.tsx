@@ -34,6 +34,8 @@ import { TradingViewChart } from './TradingViewChart';
 import { LiquidityDepthHeatmap } from './LiquidityDepthHeatmap';
 import { useMarketStream } from '../context/MarketWebSocketContext';
 import { parseWsMarketMessage, updateOrderbookAndGetMid, type OrderbookCache } from '../utils/marketWsPatch';
+import { applyRawBookFrame, emptyRawBook, rawBookIntegrityOk, readRawOrderbookFrame } from '../utils/orderbookIntegrity';
+import { mergeExplorerTradeTape } from '../utils/explorerLive';
 import { calcLiqDistancePct, LiqDistanceBadge, TokenBadge, TraderAvatar } from './TraderAvatar';
 
 interface TickerAnalyticsResponse {
@@ -65,8 +67,17 @@ export const TickerDetailPage: React.FC<{
   const { markets: streamedMarkets } = useMarketStream();
   const [analytics, setAnalytics] = useState<TickerAnalyticsResponse | null>(null);
   const [allMarkets, setAllMarkets] = useState<RisexMarket[]>([]);
-  const [candles, setCandles] = useState<MarketCandle[]>([]);
+  // Keep data attached to the market/resolution it actually belongs to.
+  // Changing timeframes must never briefly render 1H bars as 1m candles.
+  const [candleState,setCandleState] = useState<{marketId:string;resolution:string;rows:MarketCandle[];restRevision:number}>({
+    marketId:'',resolution:'',rows:[],restRevision:0,
+  });
   const [resolution, setResolution] = useState('1H');
+  const [candleSyncNonce,setCandleSyncNonce] = useState(0);
+  const candles = candleState.marketId === marketId && candleState.resolution === resolution
+    ? candleState.rows : [];
+  const resolutionRef = React.useRef(resolution);
+  resolutionRef.current = resolution;
   const [orderbook, setOrderbook] = useState<{ bids: OrderbookLevel[]; asks: OrderbookLevel[] }>({
     bids: [],
     asks: [],
@@ -75,6 +86,12 @@ export const TickerDetailPage: React.FC<{
   const [fundingHistory, setFundingHistory] = useState<FundingRateRecord[]>([]);
   const [bookTab, setBookTab] = useState<'book' | 'trades'>('book');
   const [bookIsLive, setBookIsLive] = useState(false);
+  const [bookChecksumVerified,setBookChecksumVerified] = useState(false);
+  const [bookResyncs, setBookResyncs] = useState(0);
+  const [bookUpdatedAt, setBookUpdatedAt] = useState<number | null>(null);
+  const [lastTradeReceivedAt, setLastTradeReceivedAt] = useState<number | null>(null);
+  const [tradeSocketConnected,setTradeSocketConnected] = useState(false);
+  const [depthRows, setDepthRows] = useState(10);
   const bookLiveRef = React.useRef(false);
   const [loading, setLoading] = useState(true);
 
@@ -117,7 +134,9 @@ export const TickerDetailPage: React.FC<{
       if (obRes.status === 'fulfilled' && obRes.value && !obRes.value.error && !bookLiveRef.current) {
         setOrderbook({ bids: obRes.value.bids || [], asks: obRes.value.asks || [] });
       }
-      if (trRes.status === 'fulfilled' && trRes.value?.trades) setTrades(trRes.value.trades);
+      if (trRes.status === 'fulfilled' && trRes.value?.trades) {
+        setTrades((existing) => mergeExplorerTradeTape(existing, trRes.value.trades, 80));
+      }
       if (fnRes.status === 'fulfilled' && fnRes.value?.records) setFundingHistory(fnRes.value.records);
     } catch {
       // ignore
@@ -133,7 +152,38 @@ export const TickerDetailPage: React.FC<{
     fetch(`/api/markets/${marketId}/candles?resolution=${resolution}`, { signal: controller.signal })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (!controller.signal.aborted && d?.candles) setCandles(d.candles);
+        if (!controller.signal.aborted && Array.isArray(d?.candles)) {
+          setCandleState((previous) => {
+            // Periodic REST reconciliation repairs missed WS candles, but a
+            // newer live last execution must not be overwritten by an older
+            // REST snapshot assembled before that trade arrived.
+            if (previous.marketId !== marketId || previous.resolution !== resolution || !previous.rows.length) {
+              return {marketId,resolution,rows:d.candles,restRevision:previous.restRevision+1};
+            }
+            const rest=normalizeCandles(d.candles);
+            const live=normalizeCandles(previous.rows);
+            if (!rest.length)return previous;
+            const lastRestTime=rest[rest.length-1].time;
+            const latestRest=rest[rest.length-1];
+            const laterLive=live.filter(bar=>bar.time>=lastRestTime);
+            const merged=[...rest.filter(bar=>bar.time<lastRestTime)];
+            const sameLive=laterLive.find(bar=>bar.time===lastRestTime);
+            if(sameLive){
+              merged.push({
+                ...latestRest,
+                high:Math.max(latestRest.high,sameLive.high),
+                low:Math.min(latestRest.low,sameLive.low),
+                close:sameLive.close,
+                volume:Math.max(latestRest.volume,sameLive.volume),
+              });
+            }else merged.push(latestRest);
+            merged.push(...laterLive.filter(bar=>bar.time>lastRestTime));
+            return {marketId,resolution,restRevision:previous.restRevision+1,rows:merged.map(bar=>({
+              time:bar.time*1000,open:bar.open,high:bar.high,
+              low:bar.low,close:bar.close,volume:bar.volume,
+            }))};
+          });
+        }
       })
       .catch(() => {});
   };
@@ -153,8 +203,17 @@ export const TickerDetailPage: React.FC<{
 
   useEffect(() => {
     loadCandles();
-    return () => candleAbortRef.current?.abort();
-  }, [marketId, resolution]);
+    // A periodic authoritative candle reconciliation repairs missed executions
+    // during WS disconnects or RISEx feed catch-up, without relying on polling
+    // as the primary live chart source.
+    const timer=setInterval(()=>{
+      if(document.visibilityState==='visible')loadCandles();
+    },20000);
+    return () => {
+      candleAbortRef.current?.abort();
+      clearInterval(timer);
+    };
+  }, [marketId, resolution, candleSyncNonce]);
 
   // Live WS trades and L2 depth for only the selected ticker.
   // Coalesce orderbook deltas so they don't rerender the full ticker on every level.
@@ -164,10 +223,15 @@ export const TickerDetailPage: React.FC<{
     let bookUpdateTimer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
     let disposed = false;
+    let hadConnected = false;
     const bookCache: OrderbookCache = new Map();
+    const rawBook = emptyRawBook();
     let receivedBookSnapshot = false;
+    const observedTradeIds = new Set<string>();
     bookLiveRef.current = false;
     setBookIsLive(false);
+    setBookChecksumVerified(false);
+    setTradeSocketConnected(false);
 
     const flushBook = () => {
       bookUpdateTimer = null;
@@ -181,6 +245,7 @@ export const TickerDetailPage: React.FC<{
       bookLiveRef.current = true;
       setBookIsLive(true);
       setOrderbook({ bids, asks });
+      setBookUpdatedAt(Date.now());
     };
 
     const connect = () => {
@@ -190,6 +255,12 @@ export const TickerDetailPage: React.FC<{
         const socket = new WebSocket('wss://ws.rise.trade/ws');
         ws = socket;
         socket.onopen = () => {
+          if (disposed || ws !== socket) return;
+          setTradeSocketConnected(true);
+          // A reconnection can miss executions. Repair earlier OHLCV buckets
+          // with REST immediately instead of awaiting the next reconciliation.
+          if (hadConnected) setCandleSyncNonce(n=>n+1);
+          hadConnected = true;
           attempt = 0;
           socket.send(JSON.stringify({method:'subscribe',params:{channel:'trades',market_ids:[Number(marketId)]}}));
           socket.send(JSON.stringify({method:'subscribe',params:{channel:'orderbook',market_ids:[Number(marketId)]}}));
@@ -200,28 +271,61 @@ export const TickerDetailPage: React.FC<{
             // Share the same validated RISEx WS decoder as the market-wide feed.
             // RISEx sends market ID, block and timestamp in the message envelope,
             // not necessarily inside its trade data object.
-            const frames = parseWsMarketMessage(JSON.parse(String(ev.data)));
+            const message = JSON.parse(String(ev.data));
+            const frames = parseWsMarketMessage(message);
+            const exactBookFrame = readRawOrderbookFrame(message);
             for (const frame of frames) {
               if (frame.kind !== 'orderbook' || frame.marketId !== String(marketId)) continue;
               // A delta without a full initial book cannot be displayed as a
               // complete L2 snapshot, even if it updates both sides.
               if (!receivedBookSnapshot && !frame.isSnapshot) continue;
-              if (frame.isSnapshot) receivedBookSnapshot = true;
+              if (frame.isSnapshot) {
+                receivedBookSnapshot = true;
+                setBookChecksumVerified(false);
+              }
+              // Validate raw wei strings, not rounded JavaScript number price keys.
+              if (!exactBookFrame || exactBookFrame.marketId !== String(marketId)) continue;
+              applyRawBookFrame(rawBook, exactBookFrame);
               updateOrderbookAndGetMid(bookCache, frame);
+              if (!rawBookIntegrityOk(rawBook, exactBookFrame)) {
+                receivedBookSnapshot = false;
+                bookCache.clear();
+                rawBook.bids.clear();
+                rawBook.asks.clear();
+                if (bookUpdateTimer) { clearTimeout(bookUpdateTimer); bookUpdateTimer = null; }
+                bookLiveRef.current = false;
+                setBookIsLive(false);
+                setBookChecksumVerified(false);
+                setBookResyncs((count) => count + 1);
+                // RISEx specifies unsubscribe -> subscribe after a checksum mismatch.
+                socket.send(JSON.stringify({method:'unsubscribe',params:{channel:'orderbook',market_ids:[Number(marketId)]}}));
+                socket.send(JSON.stringify({method:'subscribe',params:{channel:'orderbook',market_ids:[Number(marketId)]}}));
+                continue;
+              }
+              if (!exactBookFrame.isSnapshot) setBookChecksumVerified(true);
               if (!bookUpdateTimer) bookUpdateTimer = setTimeout(flushBook, 120);
             }
             const fresh: MarketTrade[] = frames
               .filter((frame) => frame.kind === 'trade' && frame.marketId === String(marketId))
               .map((frame) => frame.kind === 'trade' ? frame.trade : null)
-              .filter((trade): trade is MarketTrade => trade !== null);
-            if (fresh.length > 0) {
-              setTrades((prev) => {
-                const seen = new Set(prev.map((x) => x.id));
-                return [...fresh.filter((x) => !seen.has(x.id)), ...prev].slice(0, 60);
+              .filter((trade): trade is MarketTrade => trade !== null)
+              .filter(trade => {
+                const key = `${marketId}:${trade.id}`;
+                if (observedTradeIds.has(key)) return false;
+                observedTradeIds.add(key);
+                // Keep a bounded deduplication window over reconnects.
+                if (observedTradeIds.size > 5000) {
+                  const oldest=observedTradeIds.values().next().value;
+                  if (oldest)observedTradeIds.delete(oldest);
+                }
+                return true;
               });
-              setCandles((prev) => {
-                if (prev.length === 0) return prev;
-                let bars = normalizeCandles(prev);
+            if (fresh.length > 0) {
+              setLastTradeReceivedAt(Date.now());
+              setTrades((prev) => mergeExplorerTradeTape(fresh, prev, 80));
+              setCandleState((previous) => {
+                if (previous.marketId !== marketId || previous.resolution !== resolutionRef.current || !previous.rows.length) return previous;
+                let bars = normalizeCandles(previous.rows);
                 for (const tr of fresh) {
                   bars = mergeLiveTradeIntoBars(
                     bars,
@@ -230,17 +334,17 @@ export const TickerDetailPage: React.FC<{
                       size: Number(tr.size),
                       timeMs: nsToMs(tr.time) || Date.now(),
                     },
-                    resolution
+                    resolutionRef.current
                   );
                 }
-                return bars.map((b) => ({
+                return {...previous,rows:bars.map((b) => ({
                   time: b.time * 1000,
                   open: b.open,
                   high: b.high,
                   low: b.low,
                   close: b.close,
                   volume: b.volume,
-                }));
+                }))};
               });
             }
           } catch {
@@ -252,11 +356,18 @@ export const TickerDetailPage: React.FC<{
           ws = null;
           receivedBookSnapshot = false;
           bookCache.clear();
+          rawBook.bids.clear();
+          rawBook.asks.clear();
           if (bookUpdateTimer) { clearTimeout(bookUpdateTimer); bookUpdateTimer = null; }
           bookLiveRef.current = false;
           if (disposed) return;
           setBookIsLive(false);
+          setBookChecksumVerified(false);
+          setTradeSocketConnected(false);
           if (document.visibilityState === 'hidden') return;
+          // Immediately fall back to a fresh REST book rather than displaying
+          // the last received WS book throughout the reconnect backoff.
+          void loadMarketData(false);
           const delay = Math.min(30000, 1500 * Math.pow(2, attempt++));
           reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
         };
@@ -292,7 +403,7 @@ export const TickerDetailPage: React.FC<{
         // ignore
       }
     };
-  }, [marketId, resolution]);
+  }, [marketId]);
 
   const sortedPositions = useMemo(() => {
     const raw = analytics?.positions || [];
@@ -351,8 +462,25 @@ export const TickerDetailPage: React.FC<{
   const funding1hPct = Number(market?.current_funding_rate || 0) * 100;
   const fundingApr = funding1hPct * 24 * 365;
 
-  const topAsks = useMemo(() => [...orderbook.asks].slice(0, 10).reverse(), [orderbook.asks]);
-  const topBids = useMemo(() => [...orderbook.bids].slice(0, 10), [orderbook.bids]);
+  const topAsks = useMemo(() => {
+    // Cumulate USD depth starting at the best ask, then reverse for visual asks above the spread.
+    let cumulativeUsd=0;
+    return orderbook.asks.slice(0,depthRows).map(level=>({
+      ...level,cumulativeUsd:(cumulativeUsd+=Number(level.price)*Number(level.size)),
+    })).reverse();
+  }, [orderbook.asks,depthRows]);
+  const topBids = useMemo(() => {
+    // Best bid first, with cumulative USD notional down the book.
+    let cumulativeUsd=0;
+    return orderbook.bids.slice(0,depthRows).map(level=>({
+      ...level,cumulativeUsd:(cumulativeUsd+=Number(level.price)*Number(level.size)),
+    }));
+  }, [orderbook.bids,depthRows]);
+  const bestBid = Number(orderbook.bids[0]?.price || 0);
+  const bestAsk = Number(orderbook.asks[0]?.price || 0);
+  const spread = bestBid > 0 && bestAsk > bestBid ? bestAsk - bestBid : null;
+  const lastExecutionPrice = Number(trades[0]?.price || market?.last_price || 0);
+  const lastExecutionTime = trades[0]?.time ? nsToMs(trades[0].time) : null;
   const maxBookSize = useMemo(
     () =>
       Math.max(
@@ -464,6 +592,16 @@ export const TickerDetailPage: React.FC<{
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1 rounded-lg border border-slate-800/60 bg-[#080d18]/70 px-3 py-2 text-[10px] font-mono text-slate-400">
+        <span>Last executed <strong className="text-[#e8edfb]">{lastExecutionPrice>0 ? formatPrice(lastExecutionPrice) : '—'}</strong></span>
+        <span>{lastExecutionTime ? `Last fill ${new Date(lastExecutionTime).toLocaleTimeString()}` : 'Awaiting trade history'}</span>
+        <span className={tradeSocketConnected ? 'text-[#22e0a1]' : 'text-[#ffb02e]'}>
+          {tradeSocketConnected ? 'Trade WS connected' : 'Trade WS reconnecting'}
+          {lastTradeReceivedAt ? ` · last fill received ${new Date(lastTradeReceivedAt).toLocaleTimeString()}` : ' · awaiting first fill'}
+        </span>
+        <span>Chart candles = executed trades; mark = RISEx oracle. The two prices may differ.</span>
+      </div>
+
       {/* Chart + Orderbook / Trades (stretched full-height row) */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-12 items-stretch">
         <div className="sunrise-card rounded-2xl p-4 lg:col-span-8 flex flex-col min-h-[540px]">
@@ -471,6 +609,7 @@ export const TickerDetailPage: React.FC<{
             marketId={marketId}
             symbol={market?.display_name}
             candles={candles}
+            historyRevision={candleState.restRevision}
             resolution={resolution}
             onResolutionChange={setResolution}
             liveMarkPrice={markPrice}
@@ -487,7 +626,7 @@ export const TickerDetailPage: React.FC<{
                 bookTab === 'book' ? 'bg-[#131c31] text-[#ffb02e]' : 'text-slate-400'
               }`}
             >
-              L2 Orderbook {bookIsLive && <span className="ml-1 text-[#22e0a1]" title="Live orderbook stream">●</span>}
+              L2 Orderbook <span className={bookIsLive ? 'text-[#22e0a1]' : 'text-[#ffb02e]'} title={bookIsLive ? (bookChecksumVerified ? 'CRC32 verified WebSocket L2' : 'Live WS snapshot; awaiting verified delta') : 'REST fallback / reconnecting'}>●</span>
             </button>
             <button
               type="button"
@@ -496,27 +635,52 @@ export const TickerDetailPage: React.FC<{
                 bookTab === 'trades' ? 'bg-[#131c31] text-[#ffb02e]' : 'text-slate-400'
               }`}
             >
-              Recent Fills ({trades.length})
+              Recent Fills ({trades.length}) <span className={tradeSocketConnected ? 'text-[#22e0a1]' : 'text-[#ffb02e]'} title={tradeSocketConnected ? 'Trade stream connected' : 'Trade stream reconnecting'}>●</span>
             </button>
           </div>
 
           {bookTab === 'book' ? (
             <div className="flex-1 flex flex-col justify-between text-xs font-mono tabular-nums">
-              <div className="mb-1 flex justify-between text-[10px] uppercase text-slate-500">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400">
+                <span className={bookIsLive ? 'text-[#22e0a1]' : 'text-[#ffb02e]'}>
+                  {bookIsLive ? (bookChecksumVerified ? '● CRC32 verified WS L2' : '● WS snapshot · awaiting CRC update') : '○ REST snapshot / reconnecting'}
+                </span>
+                <select
+                  value={depthRows}
+                  onChange={(e) => setDepthRows(Number(e.target.value))}
+                  className="rounded border border-slate-700 bg-[#090e1a] px-1 py-0.5 text-slate-300"
+                  aria-label="Visible order book levels"
+                >
+                  {[10, 20, 30, 50].map((count) => <option key={count} value={count}>{count} levels</option>)}
+                </select>
+              </div>
+              {bookUpdatedAt !== null && (
+                <div className="mb-1 text-[10px] text-slate-500">
+                  L2 received {new Date(bookUpdatedAt).toLocaleTimeString()} · {bookIsLive ? 'WebSocket' : 'last received snapshot'}
+                </div>
+              )}
+              {bookResyncs > 0 && <div className="mb-1 text-[10px] text-[#ffb02e]">L2 checksum mismatch recovery: {bookResyncs} resync{bookResyncs === 1 ? '' : 's'}</div>}
+              {spread !== null && <div className="mb-1 flex justify-between text-[10px] text-slate-400">
+                <span>Spread {formatPrice(spread)}</span>
+                <span>{(spread / ((bestAsk + bestBid) / 2) * 10_000).toFixed(2)} bps</span>
+              </div>}
+              <div className="mb-1 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2 text-[9px] uppercase text-slate-500">
                 <span>Price</span>
-                <span>Size ({market?.base_asset_symbol})</span>
+                <span className="text-right">Size ({market?.base_asset_symbol})</span>
+                <span className="text-right">Cum. USD</span>
               </div>
               <div className="space-y-0.5">
                 {topAsks.map((a, idx) => {
                   const pct = (Number(a.size || 0) / maxBookSize) * 100;
                   return (
-                    <div key={idx} className="relative flex justify-between rounded px-2 py-1 overflow-hidden">
+                    <div key={idx} className="relative grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2 rounded px-2 py-1 overflow-hidden">
                       <div
                         className="pointer-events-none absolute right-0 top-0 bottom-0 bg-[#ff4d6d]/14"
                         style={{ width: `${Math.min(100, pct)}%` }}
                       />
                       <span className="relative text-[#ff4d6d]">{formatPrice(a.price)}</span>
-                      <span className="relative text-slate-300">{formatNumber(a.size, 3)}</span>
+                      <span className="relative text-right text-slate-300">{formatNumber(a.size, 3)}</span>
+                      <span className="relative text-right text-slate-400">{formatUsd(a.cumulativeUsd, true)}</span>
                     </div>
                   );
                 })}
@@ -531,13 +695,14 @@ export const TickerDetailPage: React.FC<{
                 {topBids.map((b, idx) => {
                   const pct = (Number(b.size || 0) / maxBookSize) * 100;
                   return (
-                    <div key={idx} className="relative flex justify-between rounded px-2 py-1 overflow-hidden">
+                    <div key={idx} className="relative grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2 rounded px-2 py-1 overflow-hidden">
                       <div
                         className="pointer-events-none absolute right-0 top-0 bottom-0 bg-[#22e0a1]/14"
                         style={{ width: `${Math.min(100, pct)}%` }}
                       />
                       <span className="relative text-[#22e0a1]">{formatPrice(b.price)}</span>
-                      <span className="relative text-slate-300">{formatNumber(b.size, 3)}</span>
+                      <span className="relative text-right text-slate-300">{formatNumber(b.size, 3)}</span>
+                      <span className="relative text-right text-slate-400">{formatUsd(b.cumulativeUsd, true)}</span>
                     </div>
                   );
                 })}
@@ -546,7 +711,8 @@ export const TickerDetailPage: React.FC<{
           ) : (
             <div className="flex-1 max-h-[480px] overflow-y-auto space-y-1 text-xs font-mono tabular-nums">
               {trades.map((tr, i) => {
-                const isBuy = tr.maker_side?.toLowerCase().includes('buy') || tr.maker_side === '0';
+                // Trade feed reports the maker's side; taker flow is the opposite.
+                const isBuy = tr.maker_side === '1' || tr.maker_side?.toLowerCase() === 'sell';
                 return (
                   <div key={`${tr.id}-${i}`} className="flex items-center justify-between rounded px-2 py-1 hover:bg-[#131c31]/60">
                     <span className={isBuy ? 'text-[#22e0a1]' : 'text-[#ff4d6d]'}>{formatPrice(tr.price)}</span>

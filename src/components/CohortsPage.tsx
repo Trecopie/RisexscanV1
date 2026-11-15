@@ -18,6 +18,8 @@ import type {
 } from '../types/risex';
 import { formatPct, formatPrice, formatSignedUsd, formatUsd, shortAddress } from '../utils/format';
 import { TokenBadge, TraderAvatar } from './TraderAvatar';
+import { SmartMoneyChanges } from './SmartMoneyChanges';
+import { FundingRiskWatchlist } from './FundingRiskWatchlist';
 
 type SubView = 'bias' | 'markets' | 'positions' | 'radar';
 type MatrixSortKey = 'openInterestUsd' | 'volume24h' | 'fundingAprPct' | 'divergencePct' | 'whaleBiasPct';
@@ -368,6 +370,13 @@ export const CohortsPage: React.FC<{
           Aggregating live wallet cohorts &amp; open positions…
         </div>
       ) : null}
+
+      <SmartMoneyChanges
+        marketNames={Object.fromEntries((data?.marketCohorts||[]).map(m=>[m.marketId,m.displayName]))}
+        onSelectMarket={onSelectMarket}
+      />
+
+      <FundingRiskWatchlist onSelectMarket={onSelectMarket} />
 
       {/* VIEW 1: Size Cohorts + Performance Cohorts */}
       {data && subView === 'bias' && (

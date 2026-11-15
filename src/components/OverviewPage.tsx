@@ -45,7 +45,9 @@ import {
   type DashboardSectorFilter,
 } from '../utils/overviewAnalytics';
 import type { NavTab } from './Navbar';
-import { MarketMoveMeter } from './Charts';
+import { MarketMiniChart } from './MarketMiniChart';
+import { useMarketSparklines } from '../hooks/useMarketSparklines';
+import { HistoricalInsights } from './HistoricalInsights';
 import { RisexSymbol } from './RisexSymbol';
 import { TokenBadge, TraderAvatar } from './TraderAvatar';
 import { useMarketStream } from '../context/MarketWebSocketContext';
@@ -425,6 +427,14 @@ export const OverviewPage: React.FC<{
     [markets, dashFilter]
   );
 
+  const miniIds=useMemo(
+    ()=>[...new Set([
+      ...dashboardData.topVolume,...dashboardData.gainers,...dashboardData.losers,
+    ].map(entry=>entry.marketId).concat(watchlistIds))].slice(0,30),
+    [dashboardData,watchlistIds]
+  );
+  const miniCharts=useMarketSparklines(miniIds);
+
   const topTraders = bundle?.topTraders || [];
   const prof = bundle?.profitability;
   const tvl = bundle?.defiLlama;
@@ -706,7 +716,7 @@ export const OverviewPage: React.FC<{
                         </span>
                         <span className="font-mono text-[9px] text-slate-500">#{idx + 1}</span>
                       </div>
-                      <MarketMoveMeter changePct={entry.changePct} width={36} height={14} />
+                      <MarketMiniChart series={miniCharts[entry.marketId]} changePct={entry.changePct} width={36} height={14} />
                     </div>
 
                     <div className="flex items-end justify-between gap-1.5 w-full">
@@ -774,7 +784,7 @@ export const OverviewPage: React.FC<{
                         </span>
                         <span className="font-mono text-[9px] text-slate-500">#{idx + 1}</span>
                       </div>
-                      <MarketMoveMeter changePct={entry.changePct} width={36} height={14} />
+                      <MarketMiniChart series={miniCharts[entry.marketId]} changePct={entry.changePct} width={36} height={14} />
                     </div>
 
                     <div className="flex items-end justify-between gap-1.5 w-full">
@@ -847,7 +857,7 @@ export const OverviewPage: React.FC<{
                         </span>
                         <span className="font-mono text-[9px] text-slate-500">#{idx + 1}</span>
                       </div>
-                      <MarketMoveMeter changePct={entry.changePct} width={36} height={14} />
+                      <MarketMiniChart series={miniCharts[entry.marketId]} changePct={entry.changePct} width={36} height={14} />
                     </div>
 
                     <div className="flex items-end justify-between gap-1.5 w-full">
@@ -884,6 +894,8 @@ export const OverviewPage: React.FC<{
           </div>
         </div>
       </section>
+
+      <HistoricalInsights />
 
       {/* Analytical Visualization Row 1: DefiLlama TVL Chart + Perps vs RWA Sector Breakdown */}
       <section className="grid grid-cols-1 gap-5 lg:grid-cols-12">
@@ -1323,7 +1335,7 @@ export const OverviewPage: React.FC<{
                       {formatPct(chg)}
                     </div>
                   </div>
-                  <MarketMoveMeter changePct={chg} />
+                  <MarketMiniChart series={miniCharts[String(m.market_id)]} changePct={chg} />
                 </div>
               </div>
             );

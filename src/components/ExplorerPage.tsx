@@ -47,6 +47,9 @@ export const ExplorerPage: React.FC<{
   const [chainHead, setChainHead] = useState<number | null>(null);
   const [explorerFetchedAt, setExplorerFetchedAt] = useState<number | null>(null);
   const [blocksAvailable, setBlocksAvailable] = useState(true);
+  const [rpcBlocks, setRpcBlocks] = useState<ExplorerBlock[]>([]);
+  const [rpcFetchedAt, setRpcFetchedAt] = useState<number | null>(null);
+  const [rpcOnline, setRpcOnline] = useState(false);
   const [markets, setMarkets] = useState<RisexMarket[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -114,6 +117,44 @@ export const ExplorerPage: React.FC<{
     };
   }, []);
 
+  // Near-real-time chain blocks come from RISE RPC; Blockscout's indexed
+  // contract transactions are a separate, eventually consistent data source.
+  useEffect(() => {
+    if (subTab !== 'blocks') return;
+    let disposed = false;
+    let inFlight = false;
+    const loadHead = async () => {
+      if (inFlight || document.visibilityState !== 'visible') return;
+      inFlight = true;
+      try {
+        const res = await fetch('/api/chain/live', { cache: 'no-store' });
+        if (!res.ok) throw new Error('RPC temporarily unavailable');
+        const payload = await res.json();
+        if (disposed) return;
+        if (Array.isArray(payload.blocks) && payload.blocks.length > 0) {
+          setRpcBlocks(payload.blocks);
+          setRpcFetchedAt(Number(payload.fetchedAt) || Date.now());
+          setRpcOnline(true);
+        } else {
+          setRpcOnline(false);
+        }
+      } catch {
+        if (!disposed) setRpcOnline(false);
+      } finally {
+        inFlight = false;
+      }
+    };
+    void loadHead();
+    const interval = setInterval(loadHead, 2000);
+    const onVisibility = () => { if (document.visibilityState === 'visible') void loadHead(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      disposed = true;
+      document.removeEventListener('visibilitychange', onVisibility);
+      clearInterval(interval);
+    };
+  }, [subTab]);
+
   const inspectHash = async (hash: string) => {
     const clean = hash.trim();
     if (!clean) return;
@@ -145,8 +186,12 @@ export const ExplorerPage: React.FC<{
     : (markets.length > 0 ? markets : streamedMarkets);
   const atRisk = useMemo(() => deriveLiveLiquidationRisk(riskCandidates, liveMarkets), [riskCandidates, liveMarkets]);
   const tradeTape = useMemo(() => mergeExplorerTradeTape(socketTrades, recentTrades), [socketTrades, recentTrades]);
+  const rpcHead = rpcOnline && rpcBlocks.length > 0 ? rpcBlocks[0].height : null;
+  const displayedHead = rpcHead ?? chainHead;
   const indexedHead = Number(blocks[0]?.height || 0);
-  const blockLag = chainHead !== null && indexedHead > 0 ? Math.max(0, chainHead - indexedHead) : null;
+  const blockLag = displayedHead !== null && indexedHead > 0 ? Math.max(0, displayedHead - indexedHead) : null;
+  const liveBlocks = rpcOnline && rpcBlocks.length > 0 ? rpcBlocks : blocks;
+  const tipFresh = rpcOnline && rpcFetchedAt !== null && Date.now() - rpcFetchedAt < 10_000;
 
   const sortedFundingMarkets = [...liveMarkets].sort(
     (a, b) => Math.abs(Number(b.current_funding_rate || 0)) - Math.abs(Number(a.current_funding_rate || 0))
@@ -167,9 +212,11 @@ export const ExplorerPage: React.FC<{
             <span className={connectionState === 'connected' ? 'text-[#22e0a1]' : 'text-[#ffb02e]'}>
               {connectionState === 'connected' ? '● Market trades live via WebSocket' : '○ Market stream reconnecting'}
             </span>
-            {chainHead !== null && <span>· RPC head #{chainHead.toLocaleString()}</span>}
-            {blockLag !== null && <span className={blockLag > 6 ? 'text-[#ffb02e]' : ''}>
-              · Explorer index {blockLag} blocks behind
+            {displayedHead !== null && <span className={tipFresh ? 'text-[#22e0a1]' : 'text-[#ffb02e]'}>
+              · {tipFresh ? '● Live RPC' : '○ Last RPC'} block #{displayedHead.toLocaleString()}
+            </span>}
+            {blockLag !== null && <span className="text-slate-400">
+              · Blockscout {blockLag} indexed blocks behind (separate source)
             </span>}
             {explorerFetchedAt !== null && <span>· Fetched {new Date(explorerFetchedAt).toLocaleTimeString()}</span>}
           </div>
@@ -204,7 +251,12 @@ export const ExplorerPage: React.FC<{
       {subTab === 'blocks' && (
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
           <div className="sunrise-card rounded-2xl p-4 lg:col-span-5">
-            <h2 className="mb-3 font-display text-base font-bold text-[#e8edfb]">Latest RISE Blocks</h2>
+            <h2 className="mb-1 font-display text-base font-bold text-[#e8edfb]">
+              Latest RISE Blocks · {tipFresh ? 'RPC live' : 'Indexed fallback'}
+            </h2>
+            <p className="mb-3 text-[10px] font-mono text-slate-400">
+              Chain tip refreshed every ~2s; indexed protocol transactions may appear later.
+            </p>
             {!blocksAvailable && (
               <div className="mb-2 text-[11px] text-[#ffb02e]">Block explorer is temporarily unavailable; showing the last successful snapshot.</div>
             )}
@@ -226,7 +278,7 @@ export const ExplorerPage: React.FC<{
                       </td>
                     </tr>
                   )}
-                  {blocks.map((b) => (
+                  {liveBlocks.map((b) => (
                     <tr key={b.height} className="hover:bg-[#131c31]/50">
                       <td className="py-2.5 pr-2 font-semibold text-[#46a6ff]">
                         <a
@@ -247,7 +299,7 @@ export const ExplorerPage: React.FC<{
                       <td className="py-2.5 pl-2 text-right text-slate-400">{formatTimeShort(b.timestamp)}</td>
                     </tr>
                   ))}
-                  {!loading && blocks.length === 0 && (
+                  {!loading && liveBlocks.length === 0 && (
                     <tr>
                       <td colSpan={4} className="py-8 text-center font-sans text-slate-400">
                         No recent RISE blocks available.

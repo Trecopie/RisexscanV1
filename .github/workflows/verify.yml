@@ -1,18 +1,46 @@
 name: Validate RISExScan
+
+# Public fork PRs must never receive write-scoped repository tokens.
+permissions:
+  contents: read
+
 on:
   pull_request:
   push:
+    branches: [main]
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: risexscan
+          POSTGRES_PASSWORD: local_ci_password
+          POSTGRES_DB: risexscan_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U risexscan -d risexscan_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - run: npm install --no-audit --no-fund
+      - name: Audit production dependency advisories
+        run: npm audit --omit=dev --audit-level=high
       - run: npm run lint
-      - run: npx tsx --test src/utils/*.test.ts
+      - run: npx tsx --test src/utils/*.test.ts src/components/*.test.tsx
+      - name: Verify zero-cost sampler safely skips without DB secret
+        run: env -u DATABASE_URL npx tsx scripts/freeHistorySampler.ts
+      - name: Verify PostgreSQL live storage and historical analytics
+        env:
+          TEST_DATABASE_URL: postgresql://risexscan:local_ci_password@localhost:5432/risexscan_test
+        run: npx tsx --test src/utils/historyStore.integration.test.ts
       - run: npm run build
       - name: Smoke-test production Express health and HTML boot
         run: |

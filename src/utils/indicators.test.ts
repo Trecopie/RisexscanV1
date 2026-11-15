@@ -57,7 +57,9 @@ test('mergeLiveTradeIntoBars updates current candle or opens next bucket cleanly
     '1H'
   );
   assert.equal(nextBucket.length, 3);
-  assert.equal(nextBucket[2].open, 109);
+  assert.equal(nextBucket[2].open, 107);
+  assert.equal(nextBucket[2].high, 107);
+  assert.equal(nextBucket[2].low, 107);
   assert.equal(nextBucket[2].close, 107);
   assert.equal(nextBucket[2].volume, 12);
 });
@@ -122,3 +124,15 @@ test('calcSupertrend tracks trend flips and outputs mutually exclusive upLine/do
   }
 });
 
+
+test('gapped 1m trade candle never invents previous-close execution', () => {
+  const baseline: NormalizedBar[]=[{
+    time: 1_799_000_000,open:100,high:101,low:99,close:100,volume:3,
+  }];
+  const frame=mergeLiveTradeIntoBars(baseline, {
+    price: 95, size: 1.5, timeMs: (1_799_000_000 + 3600) * 1000,
+  }, '1m');
+  const bar=frame.at(-1)!;
+  assert.deepEqual({open:bar.open,high:bar.high,low:bar.low,close:bar.close,volume:bar.volume},
+    {open:95,high:95,low:95,close:95,volume:1.5});
+});

@@ -246,10 +246,11 @@ export const TradingViewChart: React.FC<{
   marketId: string;
   symbol?: string;
   candles: MarketCandle[];
+  historyRevision?: number;
   resolution: string;
   onResolutionChange: (res: string) => void;
   liveMarkPrice?: number;
-}> = ({ marketId, symbol, candles, resolution, onResolutionChange, liveMarkPrice }) => {
+}> = ({ marketId, symbol, candles, historyRevision = 0, resolution, onResolutionChange, liveMarkPrice }) => {
   const [chartMode, setChartMode] = useState<'candle' | 'area'>('candle');
   const [scaleMode, setScaleMode] = useState<'normal' | 'log'>('normal');
   const [menuOpen, setMenuOpen] = useState(false);
@@ -278,6 +279,8 @@ export const TradingViewChart: React.FC<{
   const chartRef = useRef<IChartApi | null>(null);
   const mainSeriesRef = useRef<ISeriesApi<any> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<any> | null>(null);
+  const indicatorSeriesRef = useRef<Array<{key:string;series:ISeriesApi<any>}>>([]);
+  const lastHistoryRevisionRef = useRef<number>(-1);
   const lastDatasetSigRef = useRef<string>('');
 
   // Persist indicator settings
@@ -377,7 +380,9 @@ export const TradingViewChart: React.FC<{
   // Build / rebuild chart when structural mode or indicator config changes
   useEffect(() => {
     const container = chartContainerRef.current;
-    if (!container) return;
+    if (!container || bars.length === 0) return;
+    indicatorSeriesRef.current = [];
+    lastHistoryRevisionRef.current = -1;
 
     const initW = Math.max(280, container.clientWidth || 680);
     const initH = Math.max(420, container.clientHeight || 520);
@@ -507,7 +512,8 @@ export const TradingViewChart: React.FC<{
       data: { time: number; value?: number }[],
       color: string,
       width = 1.5,
-      dashed = false
+      dashed = false,
+      sourceKey = ''
     ) => {
       if (data.length === 0) return;
       const line = chart.addSeries(LineSeries, {
@@ -523,32 +529,31 @@ export const TradingViewChart: React.FC<{
           d.value !== undefined ? { time: d.time as Time, value: d.value } : { time: d.time as Time }
         )
       );
+      if (sourceKey) indicatorSeriesRef.current.push({ key: sourceKey, series: line });
     };
 
     // 5 EMA Ribbon
-    for (const slot of indicatorData.emaSlots) {
-      if (slot.data.length > 0) {
-        addLineOverlay(slot.data, slot.color, 1.5);
-      }
-    }
+    indicatorData.emaSlots.forEach((slot, index) => {
+      if (slot.data.length > 0) addLineOverlay(slot.data, slot.color, 1.5, false, `ema:${index}`);
+    });
 
     // Supertrend (separate bullish & bearish segments)
     if (settings.supertrend.enabled && settings.supertrend.visible && indicatorData.supertrend.points.length > 0) {
-      addLineOverlay(indicatorData.supertrend.upLine, settings.supertrend.upColor, 2);
-      addLineOverlay(indicatorData.supertrend.downLine, settings.supertrend.downColor, 2);
+      addLineOverlay(indicatorData.supertrend.upLine, settings.supertrend.upColor, 2, false, 'supertrend:up');
+      addLineOverlay(indicatorData.supertrend.downLine, settings.supertrend.downColor, 2, false, 'supertrend:down');
     }
 
     // SMA / VWAP / BB
     if (settings.sma.enabled && settings.sma.visible) {
-      addLineOverlay(indicatorData.sma, settings.sma.color, 1.5);
+      addLineOverlay(indicatorData.sma, settings.sma.color, 1.5, false, 'sma');
     }
     if (settings.vwap.enabled && settings.vwap.visible) {
-      addLineOverlay(indicatorData.vwap, settings.vwap.color, 1.5);
+      addLineOverlay(indicatorData.vwap, settings.vwap.color, 1.5, false, 'vwap');
     }
     if (settings.bb.enabled && settings.bb.visible) {
-      addLineOverlay(indicatorData.bb.upper, settings.bb.color, 1.25);
-      addLineOverlay(indicatorData.bb.middle, 'rgba(56, 189, 248, 0.5)', 1, true);
-      addLineOverlay(indicatorData.bb.lower, settings.bb.color, 1.25);
+      addLineOverlay(indicatorData.bb.upper, settings.bb.color, 1.25, false, 'bb:upper');
+      addLineOverlay(indicatorData.bb.middle, 'rgba(56, 189, 248, 0.5)', 1, true, 'bb:middle');
+      addLineOverlay(indicatorData.bb.lower, settings.bb.color, 1.25, false, 'bb:lower');
     }
 
     // Oscillator Panes
@@ -571,6 +576,7 @@ export const TradingViewChart: React.FC<{
         priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
       });
       rsiSeries.setData(indicatorData.rsi.map((d) => ({ time: d.time as Time, value: d.value })));
+      indicatorSeriesRef.current.push({key:'rsi',series:rsiSeries});
       rsiSeries.createPriceLine({
         price: settings.rsi.overbought,
         color: 'rgba(255, 77, 109, 0.45)',
@@ -603,6 +609,7 @@ export const TradingViewChart: React.FC<{
           color: d.color,
         }))
       );
+      indicatorSeriesRef.current.push({key:'macd:histogram',series:histSeries});
       const macdLine = macdPane.addSeries(LineSeries, {
         color: '#46a6ff',
         lineWidth: 1.5 as any,
@@ -610,6 +617,7 @@ export const TradingViewChart: React.FC<{
         lastValueVisible: true,
       });
       macdLine.setData(indicatorData.macd.macd.map((d) => ({ time: d.time as Time, value: d.value })));
+      indicatorSeriesRef.current.push({key:'macd:macd',series:macdLine});
       const signalLine = macdPane.addSeries(LineSeries, {
         color: '#ffb02e',
         lineWidth: 1.5 as any,
@@ -617,6 +625,7 @@ export const TradingViewChart: React.FC<{
         lastValueVisible: false,
       });
       signalLine.setData(indicatorData.macd.signal.map((d) => ({ time: d.time as Time, value: d.value })));
+      indicatorSeriesRef.current.push({key:'macd:signal',series:signalLine});
     }
 
     const dsKey = `${marketId}:${resolution}`;
@@ -662,15 +671,27 @@ export const TradingViewChart: React.FC<{
       chartRef.current = null;
       mainSeriesRef.current = null;
       volumeSeriesRef.current = null;
+      indicatorSeriesRef.current = [];
     };
-  }, [marketId, resolution, chartMode, scaleMode, settingsSig, bars.length > 0 ? bars[0].time : 0, bars.length]);
+  }, [marketId, resolution, chartMode, scaleMode, settingsSig, bars.length > 0]);
 
   // Smoothly stream live tick updates without tearing down chart
   useEffect(() => {
     if (!mainSeriesRef.current || bars.length === 0) return;
     const last = bars[bars.length - 1];
+    const fullHistorySync = lastHistoryRevisionRef.current !== historyRevision;
     try {
-      if (chartMode === 'candle') {
+      if (fullHistorySync) {
+        // A REST reconciliation can correct earlier candles, not only the last
+        // one. Redraw the series in place, preserving chart viewport/drawings.
+        if (chartMode === 'candle') {
+          mainSeriesRef.current.setData(bars.map(bar=>({
+            time:bar.time as Time,open:bar.open,high:bar.high,low:bar.low,close:bar.close,
+          })));
+        } else {
+          mainSeriesRef.current.setData(bars.map(bar=>({time:bar.time as Time,value:bar.close})));
+        }
+      } else if (chartMode === 'candle') {
         mainSeriesRef.current.update({
           time: last.time as Time,
           open: last.open,
@@ -685,16 +706,56 @@ export const TradingViewChart: React.FC<{
         });
       }
       if (volumeSeriesRef.current && settings.volume.enabled && settings.volume.visible) {
-        volumeSeriesRef.current.update({
-          time: last.time as Time,
-          value: last.volume,
-          color: last.close >= last.open ? 'rgba(34, 224, 161, 0.28)' : 'rgba(255, 77, 109, 0.28)',
-        });
+        const colorFor = (bar:NormalizedBar) =>
+          bar.close >= bar.open ? 'rgba(34, 224, 161, 0.28)' : 'rgba(255, 77, 109, 0.28)';
+        if (fullHistorySync) {
+          volumeSeriesRef.current.setData(bars.map(bar=>({
+            time:bar.time as Time,value:bar.volume,color:colorFor(bar),
+          })));
+        } else {
+          volumeSeriesRef.current.update({
+            time: last.time as Time,
+            value: last.volume,
+            color: colorFor(last),
+          });
+        }
       }
+      if (fullHistorySync) lastHistoryRevisionRef.current = historyRevision;
     } catch {
       // ignore out-of-order edge case
     }
-  }, [bars, chartMode, settings.volume.enabled, settings.volume.visible]);
+    // Keep the visible EMA, Supertrend, RSI, MACD, VWAP and other indicator
+    // endpoints synchronized without tearing down/zoom-resetting the chart.
+    const sources: Record<string, Array<{time:number;value?:number;color?:string}>> = {
+      'supertrend:up': indicatorData.supertrend.upLine,
+      'supertrend:down': indicatorData.supertrend.downLine,
+      sma: indicatorData.sma,
+      vwap: indicatorData.vwap,
+      'bb:upper': indicatorData.bb.upper,
+      'bb:middle': indicatorData.bb.middle,
+      'bb:lower': indicatorData.bb.lower,
+      rsi: indicatorData.rsi,
+      'macd:histogram': indicatorData.macd.histogram,
+      'macd:macd': indicatorData.macd.macd,
+      'macd:signal': indicatorData.macd.signal,
+    };
+    indicatorData.emaSlots.forEach((slot, i) => { sources[`ema:${i}`] = slot.data; });
+    for (const {key,series} of indicatorSeriesRef.current) {
+      const rows = sources[key];
+      if (!rows?.length) continue;
+      const lastPoint = rows[rows.length - 1];
+      if (!fullHistorySync && lastPoint.time !== last.time) continue;
+      try {
+        const renderRow=(point:typeof lastPoint) => point.value === undefined
+          ? {time:point.time as Time}
+          : {time:point.time as Time,value:point.value,...(point.color ? {color:point.color} : {})};
+        if (fullHistorySync)series.setData(rows.map(renderRow));
+        else series.update(renderRow(lastPoint));
+      } catch {
+        // Out-of-order older indicators never force a full chart rebuild.
+      }
+    }
+  }, [bars, historyRevision, indicatorData, chartMode, settings.volume.enabled, settings.volume.visible]);
 
   // Coordinate conversions for SVG drawing overlay
   const resSec = getResolutionSeconds(resolution);
