@@ -13,7 +13,7 @@ jobs:
           node-version: '22'
       - run: npm install --no-audit --no-fund
       - run: npm run lint
-      - run: npx tsx --test src/utils/*.test.ts
+      - run: npx tsx --test src/utils/*.test.ts src/components/*.test.tsx
       - run: npm run build
       - name: Smoke-test production Express health and HTML boot
         run: |
