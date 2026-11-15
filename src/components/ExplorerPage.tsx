@@ -261,6 +261,9 @@ export const ExplorerPage: React.FC<{
             <h2 className="mb-3 font-display text-base font-bold text-[#e8edfb]">
               Recent RISEx Protocol Transactions
             </h2>
+            <p className="mb-2 text-[11px] text-slate-400">
+              Transactions touching monitored RISEx contracts; this list can stay unchanged even while new RISE blocks arrive.
+            </p>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs font-mono tabular-nums">
                 <thead className="border-b border-slate-800 text-[11px] uppercase text-slate-400">
