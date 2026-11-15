@@ -295,14 +295,18 @@ export function reconstructTradeLifecycles(
   // lifecycle. Matching by market + timestamps prevents repeated partial closes
   // being counted as separate finished trades. A timestamp shared by a
   // position flip is assigned to the cycle that closes at that instant.
-  const cyclesByMarket = new Map<string, ReconstructedClosedTrade[]>();
+  type Window = { cycle: ReconstructedClosedTrade; opened: number; closed: number };
+  const cyclesByMarket = new Map<string, Window[]>();
   for (const cycle of closedTrades) {
     const group = cyclesByMarket.get(cycle.marketId) || [];
-    group.push(cycle);
+    group.push({ cycle, opened: nsToMs(cycle.openTime), closed: nsToMs(cycle.closeTime) });
     cyclesByMarket.set(cycle.marketId, group);
-    // A missing realized event is not proof that the PnL was zero.
+    // A missing official event does not prove that realized PnL was zero.
     cycle.realizedPnl = 0;
     cycle.funding = 0;
+  }
+  for (const windows of cyclesByMarket.values()) {
+    windows.sort((a, b) => a.closed - b.closed);
   }
   const openTotals = new Map<string, { pnl: number; events: number }>();
   let unattributedEventCount = 0;
@@ -313,20 +317,23 @@ export function reconstructTradeLifecycles(
       unattributedEventCount++;
       continue;
     }
-    const matches = (cyclesByMarket.get(marketId) || []).filter((cycle) => {
-      const opened = nsToMs(cycle.openTime);
-      const closed = nsToMs(cycle.closeTime);
-      return opened > 0 && closed >= opened && time >= opened - 1500 && time <= closed + 1500;
-    });
-    if (matches.length > 0) {
-      // If a flip opened another cycle at the same time, credit the earlier cycle.
-      matches.sort((a, b) =>
-        Math.abs(nsToMs(a.closeTime) - time) - Math.abs(nsToMs(b.closeTime) - time)
-      );
-      const cycle = matches[0];
-      cycle.realizedPnl += safeNum(event.pnl);
-      cycle.funding += safeNum(event.funding);
-      cycle.officialEventCount++;
+    const windows = cyclesByMarket.get(marketId) || [];
+    // Binary search the earliest cycle closing on or just after the event.
+    // This also credits a position reversal to the cycle being closed,
+    // instead of the next lifecycle opened by the same fill.
+    let lo = 0;
+    let hi = windows.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (windows[mid].closed + 1500 < time) lo = mid + 1;
+      else hi = mid;
+    }
+    const match = windows[lo];
+    if (match && match.opened > 0 && match.closed >= match.opened &&
+        time >= match.opened - 1500 && time <= match.closed + 1500) {
+      match.cycle.realizedPnl += safeNum(event.pnl);
+      match.cycle.funding += safeNum(event.funding);
+      match.cycle.officialEventCount++;
       continue;
     }
     const current = openCycleBounds.get(marketId);
