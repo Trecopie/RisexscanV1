@@ -46,6 +46,7 @@ import {
 } from '../utils/overviewAnalytics';
 import type { NavTab } from './Navbar';
 import { MarketMoveMeter } from './Charts';
+import { HistoricalInsights } from './HistoricalInsights';
 import { RisexSymbol } from './RisexSymbol';
 import { TokenBadge, TraderAvatar } from './TraderAvatar';
 import { useMarketStream } from '../context/MarketWebSocketContext';
@@ -884,6 +885,8 @@ export const OverviewPage: React.FC<{
           </div>
         </div>
       </section>
+
+      <HistoricalInsights />
 
       {/* Analytical Visualization Row 1: DefiLlama TVL Chart + Perps vs RWA Sector Breakdown */}
       <section className="grid grid-cols-1 gap-5 lg:grid-cols-12">
