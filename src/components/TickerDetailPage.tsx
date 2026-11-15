@@ -440,8 +440,20 @@ export const TickerDetailPage: React.FC<{
   const funding1hPct = Number(market?.current_funding_rate || 0) * 100;
   const fundingApr = funding1hPct * 24 * 365;
 
-  const topAsks = useMemo(() => [...orderbook.asks].slice(0, depthRows).reverse(), [orderbook.asks, depthRows]);
-  const topBids = useMemo(() => [...orderbook.bids].slice(0, depthRows), [orderbook.bids, depthRows]);
+  const topAsks = useMemo(() => {
+    // Cumulate USD depth starting at the best ask, then reverse for visual asks above the spread.
+    let cumulativeUsd=0;
+    return orderbook.asks.slice(0,depthRows).map(level=>({
+      ...level,cumulativeUsd:(cumulativeUsd+=Number(level.price)*Number(level.size)),
+    })).reverse();
+  }, [orderbook.asks,depthRows]);
+  const topBids = useMemo(() => {
+    // Best bid first, with cumulative USD notional down the book.
+    let cumulativeUsd=0;
+    return orderbook.bids.slice(0,depthRows).map(level=>({
+      ...level,cumulativeUsd:(cumulativeUsd+=Number(level.price)*Number(level.size)),
+    }));
+  }, [orderbook.bids,depthRows]);
   const bestBid = Number(orderbook.bids[0]?.price || 0);
   const bestAsk = Number(orderbook.asks[0]?.price || 0);
   const spread = bestBid > 0 && bestAsk > bestBid ? bestAsk - bestBid : null;
@@ -618,21 +630,23 @@ export const TickerDetailPage: React.FC<{
                 <span>Spread {formatPrice(spread)}</span>
                 <span>{(spread / ((bestAsk + bestBid) / 2) * 10_000).toFixed(2)} bps</span>
               </div>}
-              <div className="mb-1 flex justify-between text-[10px] uppercase text-slate-500">
+              <div className="mb-1 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2 text-[9px] uppercase text-slate-500">
                 <span>Price</span>
-                <span>Size ({market?.base_asset_symbol})</span>
+                <span className="text-right">Size ({market?.base_asset_symbol})</span>
+                <span className="text-right">Cum. USD</span>
               </div>
               <div className="space-y-0.5">
                 {topAsks.map((a, idx) => {
                   const pct = (Number(a.size || 0) / maxBookSize) * 100;
                   return (
-                    <div key={idx} className="relative flex justify-between rounded px-2 py-1 overflow-hidden">
+                    <div key={idx} className="relative grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2 rounded px-2 py-1 overflow-hidden">
                       <div
                         className="pointer-events-none absolute right-0 top-0 bottom-0 bg-[#ff4d6d]/14"
                         style={{ width: `${Math.min(100, pct)}%` }}
                       />
                       <span className="relative text-[#ff4d6d]">{formatPrice(a.price)}</span>
-                      <span className="relative text-slate-300">{formatNumber(a.size, 3)}</span>
+                      <span className="relative text-right text-slate-300">{formatNumber(a.size, 3)}</span>
+                      <span className="relative text-right text-slate-400">{formatUsd(a.cumulativeUsd, true)}</span>
                     </div>
                   );
                 })}
@@ -653,7 +667,8 @@ export const TickerDetailPage: React.FC<{
                         style={{ width: `${Math.min(100, pct)}%` }}
                       />
                       <span className="relative text-[#22e0a1]">{formatPrice(b.price)}</span>
-                      <span className="relative text-slate-300">{formatNumber(b.size, 3)}</span>
+                      <span className="relative text-right text-slate-300">{formatNumber(b.size, 3)}</span>
+                      <span className="relative text-right text-slate-400">{formatUsd(b.cumulativeUsd, true)}</span>
                     </div>
                   );
                 })}
