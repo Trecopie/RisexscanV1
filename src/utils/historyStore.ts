@@ -32,6 +32,11 @@ export interface ObservedTradeRecord {
   timestampMs: number;
   notionalUsd: number;
   feeUsd: number | null;
+  maker?: string | null;
+  taker?: string | null;
+  makerSide?: number | null;
+  price?: string | null;
+  size?: string | null;
 }
 
 export interface HistoricalAnalyticsPayload {
@@ -106,6 +111,11 @@ export class HistoryStore {
           PRIMARY KEY(market_id,cohort,bucket_ms)
         );
         CREATE INDEX IF NOT EXISTS risexscan_cohort_time ON risexscan_cohort_snapshots(bucket_ms);
+        ALTER TABLE risexscan_observed_trades ADD COLUMN IF NOT EXISTS maker_address TEXT;
+        ALTER TABLE risexscan_observed_trades ADD COLUMN IF NOT EXISTS taker_address TEXT;
+        ALTER TABLE risexscan_observed_trades ADD COLUMN IF NOT EXISTS maker_side SMALLINT;
+        ALTER TABLE risexscan_observed_trades ADD COLUMN IF NOT EXISTS price_text TEXT;
+        ALTER TABLE risexscan_observed_trades ADD COLUMN IF NOT EXISTS size_text TEXT;
         CREATE INDEX IF NOT EXISTS risexscan_trade_time ON risexscan_observed_trades(time_ms);
         CREATE INDEX IF NOT EXISTS risexscan_snapshot_time ON risexscan_market_snapshots(bucket_ms);
       `);
@@ -194,11 +204,17 @@ export class HistoryStore {
         time_ms:Math.round(trade.timestampMs),
         notional_usd:trade.notionalUsd,
         reported_fee_usd:trade.feeUsd,
+        maker_address:trade.maker||null,taker_address:trade.taker||null,
+        maker_side:trade.makerSide??null,price_text:trade.price||null,size_text:trade.size||null,
       })));
       await this.pool.query(`
-        INSERT INTO risexscan_observed_trades(market_id,trade_id,time_ms,notional_usd,reported_fee_usd)
-        SELECT market_id,trade_id,time_ms,notional_usd,reported_fee_usd
-        FROM jsonb_to_recordset($1::jsonb) AS r(market_id TEXT,trade_id TEXT,time_ms BIGINT,notional_usd DOUBLE PRECISION,reported_fee_usd DOUBLE PRECISION)
+        INSERT INTO risexscan_observed_trades(market_id,trade_id,time_ms,notional_usd,reported_fee_usd,maker_address,taker_address,maker_side,price_text,size_text)
+        SELECT market_id,trade_id,time_ms,notional_usd,reported_fee_usd,maker_address,taker_address,maker_side,price_text,size_text
+        FROM jsonb_to_recordset($1::jsonb) AS r(
+          market_id TEXT,trade_id TEXT,time_ms BIGINT,notional_usd DOUBLE PRECISION,
+          reported_fee_usd DOUBLE PRECISION,maker_address TEXT,taker_address TEXT,
+          maker_side SMALLINT,price_text TEXT,size_text TEXT
+        )
         ON CONFLICT DO NOTHING
       `,[chunk]);
     }
