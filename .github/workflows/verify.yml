@@ -31,6 +31,8 @@ jobs:
         with:
           node-version: '22'
       - run: npm install --no-audit --no-fund
+      - name: Audit production dependency advisories
+        run: npm audit --omit=dev --audit-level=high
       - run: npm run lint
       - run: npx tsx --test src/utils/*.test.ts src/components/*.test.tsx
       - name: Verify zero-cost sampler safely skips without DB secret
