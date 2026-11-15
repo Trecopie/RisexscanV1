@@ -93,20 +93,28 @@ async function main(){
           // Persist confirmed-mode candle estimates. Latest partial day is
           // never counted as a complete historical daily volume.
           const cutoff=Math.floor(Date.now()/DAY)*DAY;
+          const eligible=candles.filter(candle=>candle.time<cutoff)
+            .map(candle=>({day:candle.time,usd:dailyVolumeEstimate(candle,mode)}))
+            .filter(row=>row.usd>=0&&Number.isFinite(row.usd));
           let added=0;
-          for(const candle of candles){
-            if(candle.time>=cutoff)continue;
-            const usd=dailyVolumeEstimate(candle,mode);
-            if(usd<0||!Number.isFinite(usd))continue;
-            await pool.query(`
-              INSERT INTO risexscan_candle_daily(market_id,day_ms,estimated_volume_usd,volume_mode)
-              VALUES($1,$2,$3,$4)
-              ON CONFLICT(market_id,day_ms) DO UPDATE
-                SET estimated_volume_usd=EXCLUDED.estimated_volume_usd,
-                  volume_mode=EXCLUDED.volume_mode,fetched_at=now()
-            `,[id,candle.time,usd,mode]);
-            rows++;added++;
-            if(Date.now()>deadline-10000)break;
+          // Batch UPSERT: one Neon round-trip per <=250 candle rows.
+          // A per-candle query would exhaust free GitHub Actions minutes.
+          for(let at=0;at<eligible.length&&Date.now()<deadline-10000;at+=250){
+            const batch=eligible.slice(at,at+250);
+            const params:Array<string|number>=[];
+            const values=batch.map((row,i)=>{
+              params.push(id,row.day,row.usd,mode);
+              const p=i*4;
+              return '('+[1,2,3,4].map(j=>'$'+(p+j)).join(',')+')';
+            });
+            await pool.query(
+              'INSERT INTO risexscan_candle_daily(market_id,day_ms,estimated_volume_usd,volume_mode) VALUES '+
+              values.join(',')+
+              ' ON CONFLICT(market_id,day_ms) DO UPDATE SET estimated_volume_usd=EXCLUDED.estimated_volume_usd, '+
+              'volume_mode=EXCLUDED.volume_mode,fetched_at=now()',
+              params
+            );
+            added+=batch.length;rows+=batch.length;
           }
           verified++;
           perMarket.push(id+': '+mode+' '+added+' UTC days; live24h comparison difference '+Math.round((calibrated.relativeDifference||0)*100)+'%');
