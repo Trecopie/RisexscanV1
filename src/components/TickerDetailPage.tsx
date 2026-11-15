@@ -165,6 +165,7 @@ export const TickerDetailPage: React.FC<{
     let attempt = 0;
     let disposed = false;
     const bookCache: OrderbookCache = new Map();
+    let receivedBookSnapshot = false;
     bookLiveRef.current = false;
     setBookIsLive(false);
 
@@ -202,6 +203,10 @@ export const TickerDetailPage: React.FC<{
             const frames = parseWsMarketMessage(JSON.parse(String(ev.data)));
             for (const frame of frames) {
               if (frame.kind !== 'orderbook' || frame.marketId !== String(marketId)) continue;
+              // A delta without a full initial book cannot be displayed as a
+              // complete L2 snapshot, even if it updates both sides.
+              if (!receivedBookSnapshot && !frame.isSnapshot) continue;
+              if (frame.isSnapshot) receivedBookSnapshot = true;
               updateOrderbookAndGetMid(bookCache, frame);
               if (!bookUpdateTimer) bookUpdateTimer = setTimeout(flushBook, 120);
             }
@@ -245,6 +250,9 @@ export const TickerDetailPage: React.FC<{
         socket.onclose = () => {
           if (ws !== socket) return;
           ws = null;
+          receivedBookSnapshot = false;
+          bookCache.clear();
+          if (bookUpdateTimer) { clearTimeout(bookUpdateTimer); bookUpdateTimer = null; }
           bookLiveRef.current = false;
           if (disposed) return;
           setBookIsLive(false);
