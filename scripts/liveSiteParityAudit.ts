@@ -58,7 +58,7 @@ try{
 }catch(err){
   console.warn('Could not compare simultaneous public market responses:',String(err));
 }
-type EndpointCheck={name:string;ms:number;status:'success'|'failure';reason?:string};
+type EndpointCheck={name:string;ms:number;status:'success'|'failure'|'warning';reason?:string};
 const checks:EndpointCheck[]=[];
 const check=async(name:string,path:string,validate:(v:any)=>boolean=()=>true,optional=false)=>{
   try{
@@ -66,7 +66,7 @@ const check=async(name:string,path:string,validate:(v:any)=>boolean=()=>true,opt
     if(!validate(result.data))throw Error('unexpected response shape/data');
     checks.push({name,ms:result.ms,status:'success'});
   }catch(err){
-    checks.push({name,ms:0,status:optional?'success':'failure',reason:String(err).slice(0,220)});
+    checks.push({name,ms:0,status:optional?'warning':'failure',reason:String(err).slice(0,220)});
   }
 };
 // Verify the public SPA's most-used API paths once; this is intentionally
@@ -92,14 +92,13 @@ await check('Latest public trades','/api/trades/recent',d=>!!d);
 await check('Explorer index','/api/explorer/overview',d=>!!d);
 await check('DefiLlama protocol TVL','/api/analytics/protocol-tvl',d=>
   Array.isArray(d?.tvlHistory),true);
-const firstMarket=parity[0]?.market;
 const pickedId=(()=> {
   try {
     const d=overview?.data?.markets;
     return Array.isArray(d)?String(d.find((m:any)=>m.active!==false)?.market_id||''):'';
   }catch{return '';}
 })();
-if(/^\\d{1,6}$/.test(pickedId)){
+if(/^\d{1,6}$/.test(pickedId)){
   await check('Selected market orderbook','/api/markets/'+pickedId+'/orderbook',
     d=>Array.isArray(d?.bids)&&Array.isArray(d?.asks),true);
   await check('Selected market candles','/api/markets/'+pickedId+'/candles?resolution=1H',
