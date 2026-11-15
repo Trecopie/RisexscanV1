@@ -11,6 +11,7 @@ interface History {
   };
   liveCollector:{connected:boolean;lastTradeAt:number|null;droppedInMemory:number};
   dailyTrades:Array<{day:number;volumeUsd:number;reportedFeesUsd:number|null;feeEventCount:number;tradeCount:number}>;
+  hourlyFees:Array<{time:number;reportedFeesUsd:number;feeEventCount:number}>;
   oiSnapshots:Array<{time:number;openInterestUsd:number;volume24hUsd:number;marketCount:number}>;
 }
 
@@ -40,7 +41,7 @@ const HistorySeries:React.FC<{title:string;subtitle:string;values:ChartPoint[];c
         : values.length===1 ?
           <div className="mt-3 flex h-[100px] flex-col items-center justify-center gap-2 text-xs text-slate-400" role="status">
             <span className="h-2.5 w-2.5 rounded-full" style={{backgroundColor:color}} aria-hidden="true"/>
-            <span>1 recorded observation — another is needed to draw a trend.</span>
+            <span>Latest observation · trend building</span>
           </div>
         : <div className="mt-4 flex h-[100px] items-center justify-center text-xs text-slate-500">No observations recorded yet.</div>}
       {values.length>0 && <div className="flex justify-between text-[10px] font-mono text-slate-500">
@@ -53,6 +54,7 @@ const HistorySeries:React.FC<{title:string;subtitle:string;values:ChartPoint[];c
 export const HistoricalInsights:React.FC=()=>{
   const [data,setData]=useState<History|null>(null);
   const [failed,setFailed]=useState(false);
+  const [protocolTvl,setProtocolTvl]=useState<ChartPoint[]>([]);
   useEffect(()=>{
     const controller=new AbortController();
     const fetchIt=async()=>{
@@ -63,9 +65,23 @@ export const HistoricalInsights:React.FC=()=>{
         if(!controller.signal.aborted){setData(await response.json());setFailed(false);}
       }catch{if(!controller.signal.aborted)setFailed(true);}
     };
+    const fetchTvl=async()=>{
+      try{
+        const res=await fetch('/api/analytics/protocol-tvl',{signal:controller.signal});
+        if(!res.ok)return;
+        const json=await res.json();
+        if(!controller.signal.aborted && Array.isArray(json.tvlHistory)){
+          setProtocolTvl(json.tvlHistory
+            .filter((v:any)=>Number.isFinite(v.date)&&Number.isFinite(v.tvl)&&v.tvl>=0)
+            .map((v:any)=>({time:v.date,value:v.tvl})));
+        }
+      }catch{/* Keep verified RISEx charts when DefiLlama is unavailable. */}
+    };
     void fetchIt();
+    void fetchTvl();
     const timer=setInterval(fetchIt,60000);
-    return()=>{controller.abort();clearInterval(timer);};
+    const tvlTimer=setInterval(fetchTvl,180000);
+    return()=>{controller.abort();clearInterval(timer);clearInterval(tvlTimer);};
   },[]);
   const parsed=useMemo(()=>{
     const daily=data?.dailyTrades??[];
@@ -75,50 +91,51 @@ export const HistoricalInsights:React.FC=()=>{
       volume+=d.volumeUsd;
       observedTradeEvents+=d.tradeCount;
       cumulativeVolume.push({time:d.day,value:volume});
-      if(d.reportedFeesUsd!==null && d.feeEventCount>0){
-        fees+=d.reportedFeesUsd;
-        reportedFeeEvents+=d.feeEventCount;
-        cumulativeFees.push({time:d.day,value:fees});
-      }
+      reportedFeeEvents+=d.feeEventCount;
     }
+    // Hourly reported fees are real observed trade-fee events, not daily
+    // fabricated interpolation or all-time venue fees.
+    for(const hour of data?.hourlyFees??[]){
+      fees+=hour.reportedFeesUsd;
+      cumulativeFees.push({time:hour.time,value:fees});
+    }
+    /* end hourly fee series */
     const oi=data?.oiSnapshots.map(d=>({time:d.time,value:d.openInterestUsd}))??[];
     return {cumulativeVolume,cumulativeFees,oi,reportedFeeEvents,observedTradeEvents};
   },[data]);
   return <section className="sunrise-card space-y-3 rounded-2xl p-4 sm:p-5" aria-label="Historical market observations">
-    <div className="flex flex-wrap items-start justify-between gap-3">
+    <div className="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h2 className="font-display text-base font-bold text-[#e8edfb]">Historical Market Observatory</h2>
-        <p className="mt-1 text-xs text-slate-400">Verifiable hourly OI snapshots and deduplicated public trade observations. Not reconstructed all-time statistics.</p>
+        <h2 className="font-display text-base font-bold text-[#e8edfb]">Market History</h2>
+        <p className="mt-1 text-xs text-slate-400">RISEx observations and independently sourced protocol TVL.</p>
       </div>
-      <span className={data?.liveCollector?.connected?'text-[#22e0a1] text-xs font-mono':'text-[#ffb02e] text-xs font-mono'}>
-        {data?.liveCollector?.connected?'● Collector connected':'○ Collector not connected'}
-      </span>
+      <div className="flex items-center gap-3">
+        <span className={data?.liveCollector?.connected?'text-[#22e0a1] text-[11px] font-mono':'text-[#ffb02e] text-[11px] font-mono'}>
+          {data?.liveCollector?.connected?'● Live':'○ Reconnecting'}
+        </span>
+        <details className="relative text-xs text-slate-400">
+          <summary className="cursor-pointer list-none rounded border border-slate-800 px-2 py-1 hover:text-white" title="Source definitions and limitations">Sources <span aria-hidden="true">ⓘ</span></summary>
+          <div className="absolute right-0 top-full z-20 mt-2 w-72 rounded-xl border border-slate-700 bg-[#0c1323] p-3 text-[11px] leading-relaxed text-slate-300 shadow-xl sm:w-96">
+            <p><strong>TVL</strong> — DefiLlama protocol historical series, not open interest.</p>
+            <p className="mt-1"><strong>OI</strong> — RISEx market REST snapshots, recorded hourly.</p>
+            <p className="mt-1"><strong>Volume / fees</strong> — deduplicated RISEx trades collected by WebSocket and REST; partial coverage, not exchange lifetime totals. Fees include only reported values.</p>
+            <a className="mt-2 inline-block text-[#46a6ff] underline" href="https://defillama.com/protocol/risex" target="_blank" rel="noopener noreferrer">DefiLlama source</a>
+          </div>
+        </details>
+      </div>
     </div>
     {!data?.coverage?.databaseConnected ? (
       <div className="rounded-xl border border-[#ffb02e]/25 bg-[#ffb02e]/[0.04] p-4 text-xs text-slate-400">
-        {failed ? 'Historical feed is temporarily unavailable. ' : ''}
-        Persistent market history requires DATABASE_URL and an always-running collector.
-        Markets and live prices still work without PostgreSQL. See deployment instructions for setup.
+        {failed?'Historical feed temporarily unavailable. ':'Neon history is disconnected. '}
+        Live market prices remain available.
       </div>
-    ) : <>
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-        <HistorySeries title="Recorded Open Interest" subtitle="Hourly official REST OI snapshots · USD" color="#ffb02e" values={parsed.oi}/>
-        <HistorySeries title="Cumulative Observed Volume" subtitle="Up to 90 sampled UTC days · WS + REST catch-up, incomplete" color="#22e0a1" values={parsed.cumulativeVolume}/>
-        <HistorySeries title="Cumulative Disclosed Fees" subtitle="Reported fees only · incomplete coverage, not total venue fees" color="#46a6ff" values={parsed.cumulativeFees}/>
+    ) : (
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <HistorySeries title="Protocol TVL" subtitle="DefiLlama · Historical" color="#9a8bff" values={protocolTvl}/>
+        <HistorySeries title="Open Interest" subtitle="RISEx · Hourly samples" color="#ffb02e" values={parsed.oi}/>
+        <HistorySeries title="Observed Volume" subtitle="RISEx · Sampled cumulative" color="#22e0a1" values={parsed.cumulativeVolume}/>
+        <HistorySeries title="Reported Fees" subtitle="RISEx · Sampled cumulative · Hourly" color="#46a6ff" values={parsed.cumulativeFees}/>
       </div>
-      <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-800 pt-2 text-[10px] font-mono text-slate-400">
-        <span>Observed trade events {data.coverage.observedTrades.toLocaleString()}</span>
-        <span>Fees disclosed on {parsed.reportedFeeEvents.toLocaleString()}/{parsed.observedTradeEvents.toLocaleString()} sampled trades</span>
-        <span>Earliest sampled trade timestamp {data.coverage.firstTradeAt ? new Date(data.coverage.firstTradeAt).toLocaleString() : 'not yet'}</span>
-        <span>OI history begins {data.coverage.firstSnapshotAt ? new Date(data.coverage.firstSnapshotAt).toLocaleString() : 'not yet'}</span>
-      </div>
-      <p className="text-[10px] text-[#ffb02e]">
-        Partial coverage: earlier history, collector downtime and any dropped events are not represented.
-        Hourly REST OI samples and observed trade totals have different data origins and must not be equated.
-      </p>
-      <p className="text-[10px] text-slate-500">
-        Compare independent venue-wide metrics on <a href="https://defillama.com/protocol/risex" target="_blank" rel="noopener noreferrer" className="text-[#46a6ff] underline underline-offset-2 hover:text-white">DefiLlama (RISEx)</a>. Its TVL, open interest and cumulative perp volume are third-party aggregates, not the observed trade/fee series above.
-      </p>
-    </>}
+    )}
   </section>;
 };

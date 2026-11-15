@@ -52,6 +52,7 @@ export interface HistoricalAnalyticsPayload {
     note: string;
   };
   dailyTrades: Array<{day: number; volumeUsd: number; reportedFeesUsd: number | null; feeEventCount: number; tradeCount: number}>;
+  hourlyFees: Array<{time: number; reportedFeesUsd: number; feeEventCount: number}>;
   oiSnapshots: Array<{time: number; openInterestUsd: number; volume24hUsd: number; marketCount: number}>;
 }
 
@@ -346,16 +347,24 @@ export class HistoryStore {
         observedTrades:0,
         note:'Observed data is incomplete before the collector was online and during any disconnection; no all-time claims.',
       },
-      dailyTrades:[],oiSnapshots:[],
+      dailyTrades:[],hourlyFees:[],oiSnapshots:[],
     };
     if(!this.ready || !this.pool)return unavailable;
-    const [trades,snapshots,range] = await Promise.all([
+    const [trades,hourlyFees,snapshots,range] = await Promise.all([
       this.pool.query(`
         SELECT (time_ms/86400000)*86400000 AS day,
           SUM(notional_usd) AS volume, SUM(reported_fee_usd) AS fees,
           COUNT(reported_fee_usd) AS fee_count, COUNT(*) AS count
         FROM risexscan_observed_trades
         GROUP BY day ORDER BY day DESC LIMIT 90
+      `),
+      this.pool.query(`
+        SELECT (time_ms/3600000)*3600000 AS time,
+          SUM(reported_fee_usd) AS fees,
+          COUNT(reported_fee_usd) AS fee_count
+        FROM risexscan_observed_trades
+        WHERE reported_fee_usd IS NOT NULL
+        GROUP BY 1 ORDER BY 1 DESC LIMIT 168
       `),
       this.pool.query(`
         SELECT bucket_ms AS time,SUM(oi_usd) AS oi,SUM(volume_24h_usd) AS volume,
@@ -385,6 +394,10 @@ export class HistoryStore {
         day:Number(row.day),volumeUsd:Number(row.volume),
         reportedFeesUsd:row.fees === null ? null :Number(row.fees),
         feeEventCount:Number(row.fee_count),tradeCount:Number(row.count),
+      })),
+      hourlyFees:hourlyFees.rows.reverse().map(row=>({
+        time:Number(row.time),reportedFeesUsd:Number(row.fees),
+        feeEventCount:Number(row.fee_count),
       })),
       oiSnapshots:snapshots.rows.reverse().map(row=>({
         time:Number(row.time),openInterestUsd:Number(row.oi),volume24hUsd:Number(row.volume),marketCount:Number(row.markets),

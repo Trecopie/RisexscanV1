@@ -1444,6 +1444,17 @@ async function startServer() {
     }
   });
 
+  // Use free DefiLlama protocol TVL history as a separately attributed series.
+  // It must never be substituted for RISEx OI, trading volume, or fees.
+  app.get('/api/analytics/protocol-tvl',async(_req:Request,res:Response)=>{
+    try{
+      const d=await getDefiLlamaRiseData();
+      res.json({source:'DefiLlama',tvlHistory:d.tvlHistory,updatedAt:d.fetchedAt});
+    }catch{
+      res.status(503).json({error:'Protocol TVL history unavailable'});
+    }
+  });
+
   app.get('/api/data/freshness', async (_req:Request,res:Response) => {
     res.setHeader('Cache-Control','no-store');
     const storage=await historyStore.storageStatus().catch(()=>null);

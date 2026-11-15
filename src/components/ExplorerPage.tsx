@@ -249,7 +249,7 @@ export const ExplorerPage: React.FC<{
 
       {/* SUBTAB 1: BLOCKS & TXS */}
       {subTab === 'blocks' && (
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-12">
           <div className="sunrise-card rounded-2xl p-4 lg:col-span-5">
             <h2 className="mb-1 font-display text-base font-bold text-[#e8edfb]">
               Latest RISE Blocks · {tipFresh ? 'RPC live' : 'Indexed fallback'}
