@@ -140,9 +140,11 @@ export function mergeLiveTradeIntoBars(
     ...bars,
     {
       time: barTime,
-      open: last.close,
-      high: Math.max(last.close, trade.price),
-      low: Math.min(last.close, trade.price),
+      // The first actual execution in the interval sets OHLC open/high/low.
+      // Using the prior candle's close invents untraded prices after gaps.
+      open: trade.price,
+      high: trade.price,
+      low: trade.price,
       close: trade.price,
       volume: vol,
     },
