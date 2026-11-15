@@ -79,5 +79,8 @@ export function risexBookChecksum(book:RawBook):number {
 }
 
 export function rawBookIntegrityOk(book:RawBook,frame:RawBookFrame):boolean {
-  return frame.checksum === null || risexBookChecksum(book) === frame.checksum;
+  // RISEx snapshots legitimately have no checksum. Updates always specify one.
+  // Never call an unverified update an integrity-checked live orderbook.
+  if (frame.isSnapshot) return true;
+  return frame.checksum !== null && risexBookChecksum(book) === frame.checksum;
 }
