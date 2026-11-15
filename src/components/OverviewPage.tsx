@@ -494,7 +494,7 @@ export const OverviewPage: React.FC<{
                 onClick={() => onNavigateTab('markets')}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700/70 bg-[#070b14] px-3.5 py-2 text-xs font-medium text-slate-300 hover:border-[#ffb02e]/50 hover:text-[#e8edfb] transition-colors"
               >
-                {bundle?.totalMarketsCount || markets.length || 54} Markets
+                {bundle ? bundle.activeMarketsCount : markets.filter(m=>m.active!==false).length} Markets
                 <ArrowRight className="h-3.5 w-3.5" />
               </button>
               <button
@@ -593,10 +593,10 @@ export const OverviewPage: React.FC<{
         <div className="sunrise-card rounded-xl p-3.5 border-t-2 border-t-[#8b7bff]/50">
           <div className="text-[11px] uppercase tracking-wider text-slate-400">Active Markets</div>
           <div className="mt-1 font-mono text-lg font-bold tabular-nums text-[#e8edfb]">
-            {bundle ? `${bundle.activeMarketsCount}/${bundle.totalMarketsCount}` : '—'}
+            {bundle ? `${bundle.activeMarketsCount} Active` : '—'}
           </div>
           <div className="mt-0.5 text-[10px] font-mono text-slate-400">
-            {sectorData.perpCount} Crypto · {sectorData.rwaCount} RWA
+            {bundle ? `${Math.max(0,bundle.totalMarketsCount-bundle.activeMarketsCount)} inactive of ${bundle.totalMarketsCount} listed` : 'Live RISEx markets'}
           </div>
         </div>
         <div className="sunrise-card rounded-xl p-3.5 border-t-2 border-t-[#46a6ff]/60">
