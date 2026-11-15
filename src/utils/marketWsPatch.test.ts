@@ -250,3 +250,12 @@ test('public WS trade uses outer block metadata and worker timestamp when inner 
     assert.equal(frames[0].trade.log_index,'4');
   }
 });
+
+test('unchanged repeated oracle frames do not cause new market array references or rerenders', () => {
+  const market=mkMarket({mark_price:'91000', index_price:'90900'});
+  const result=applyWsBatchToMarkets([market],new Map(),[
+    {kind:'oracle',marketId:'1',markPrice:91000,indexPrice:90900}
+  ]);
+  assert.equal(result.changed,false);
+  assert.equal(result.markets[0],market);
+});
