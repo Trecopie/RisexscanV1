@@ -919,21 +919,6 @@ export const WalletPage: React.FC<{
                     <button
                       type="button"
                       onClick={() => {
-                        setRzViewMode('events');
-                        setRzMarketFilter('ALL');
-                        setRzShowAll(false);
-                      }}
-                      className={`rounded-lg px-2.5 py-1 text-xs font-mono transition-colors ${
-                        rzViewMode === 'events'
-                          ? 'bg-[#22e0a1] font-semibold text-[#041b12]'
-                          : 'text-slate-400 hover:text-[#e8edfb]'
-                      }`}
-                    >
-                      Partial Closes ({(data.realizedPnlHistory?.length || 0).toLocaleString()})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
                         setRzViewMode('cycles');
                         setRzMarketFilter('ALL');
                         setRzShowAll(false);
@@ -945,6 +930,21 @@ export const WalletPage: React.FC<{
                       }`}
                     >
                       Aggregated Trades ({data.closedTrades.length.toLocaleString()})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRzViewMode('events');
+                        setRzMarketFilter('ALL');
+                        setRzShowAll(false);
+                      }}
+                      className={`rounded-lg px-2.5 py-1 text-xs font-mono transition-colors ${
+                        rzViewMode === 'events'
+                          ? 'bg-[#22e0a1] font-semibold text-[#041b12]'
+                          : 'text-slate-400 hover:text-[#e8edfb]'
+                      }`}
+                    >
+                      Partial Closes ({(data.realizedPnlHistory?.length || 0).toLocaleString()})
                     </button>
                   </div>
 
