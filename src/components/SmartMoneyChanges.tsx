@@ -3,12 +3,13 @@ import {formatSignedUsd,formatUsd} from '../utils/format';
 import {TokenBadge} from './TraderAvatar';
 
 type Change={
-  marketId:string;cohort:string;fromTime:number;toTime:number;
-  previousNetUsd:number;currentNetUsd:number;deltaNetUsd:number;
+  marketId:string;cohort:string;fromTime:number|null;toTime:number;
+  previousNetUsd:number|null;currentNetUsd:number;deltaNetUsd:number|null;
   currentLongUsd:number;currentShortUsd:number;positionCount:number;
 };
 interface Response {
-  completeHistory:false;fromTime:number|null;toTime:number|null;changes:Change[];
+  completeHistory:false;fromTime:number|null;toTime:number|null;
+  mode:'unavailable'|'current'|'changes';changes:Change[];
   indexedTraders:number;note:string;
 }
 const tiers=['all','whale','shark','dolphin','fish','shrimp'] as const;
@@ -36,12 +37,13 @@ export const SmartMoneyChanges:React.FC<{
     const timer=setInterval(refresh,60000);
     return()=>{clearInterval(timer);controller.abort();};
   },[]);
+  const comparing=data?.mode==='changes' && data.fromTime!==null;
   const rows=useMemo(()=>data?.changes.filter(row=>tier==='all'||row.cohort===tier).slice(0,12) || [],[data,tier]);
   return <section className="sunrise-card rounded-xl p-4 sm:p-5 space-y-3">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 className="font-display text-base font-bold text-[#e8edfb]">Smart Money · Positioning Changes</h2>
-        <p className="mt-1 text-xs text-slate-400">Hourly changes in indexed trader long/short notional, grouped by account-size cohort.</p>
+        <p className="mt-1 text-xs text-slate-400">Latest indexed cohort long/short exposure. Verified hourly changes appear once two distinct snapshots exist.</p>
       </div>
       <div role="group" aria-label="Trader cohort to inspect" className="flex flex-wrap gap-1">
         {tiers.map(id=><button
@@ -52,41 +54,48 @@ export const SmartMoneyChanges:React.FC<{
         >{id}</button>)}
       </div>
     </div>
-    {!data?.fromTime||!data?.toTime ? (
-      <div className="rounded-lg border border-slate-800 bg-[#080d18] px-4 py-6 text-center text-xs text-slate-400">
-        {error
-          ? 'Could not load position change history. '
-          : data?.toTime
-            ? `First hourly cohort snapshot recorded ${new Date(data.toTime).toLocaleString()}. Waiting for the next distinct hourly snapshot to compare positions. `
-            : 'No indexed cohort snapshots recorded yet. '}
-        {!data?.toTime && 'Position history needs the persistent database and completed indexer cycles.'}
+    {!data?.toTime ? (
+      <div className="rounded-lg border border-slate-800 bg-[#080d18] px-4 py-6 text-center text-xs text-slate-400" role="status">
+        {error?'Position feed is temporarily unavailable. ':'No indexed cohort snapshot is available yet. '}
+        Position history requires a connected persistent database and an indexer cycle.
       </div>
     ):<>
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] font-mono text-slate-500">
-        <span>From {new Date(data.fromTime).toLocaleString()}</span>
-        <span>To {new Date(data.toTime).toLocaleString()}</span>
-        <span>{data.indexedTraders.toLocaleString()} discovered accounts (not all enriched)</span>
+        {comparing && data.fromTime!==null && <span>From {new Date(data.fromTime).toLocaleString()}</span>}
+        <span>{comparing?'To snapshot':'Snapshot hour'} {new Date(data.toTime).toLocaleString()}</span>
+        <span>{data.indexedTraders.toLocaleString()} discovered accounts (only enriched accounts included)</span>
       </div>
-      {rows.length===0 ? <div className="py-5 text-center text-xs text-slate-500">No comparable positioning changes for this cohort.</div> :
+      {!comparing && <p className="text-[11px] text-[#ffb02e]">
+        Current indexed exposure is available now. No change is calculated until a second hourly snapshot exists.
+      </p>}
+      {error && <p className="text-[10px] text-[#ffb02e]">Refresh failed; displaying the last successful snapshot.</p>}
+      {rows.length===0 ? <div className="py-5 text-center text-xs text-slate-500">No indexed positions found for this cohort in the available snapshot.</div> :
         <div className="overflow-x-auto">
           <table className="w-full text-left text-[11px] font-mono tabular-nums">
             <thead className="text-slate-500 uppercase">
-              <tr><th className="py-2">Market</th><th>Cohort</th><th className="text-right">Net Δ</th><th className="text-right">Long</th><th className="text-right">Short</th><th className="text-right">Indexed pos.</th></tr>
+              <tr><th className="py-2">Market</th><th>Cohort</th><th className="text-right">{comparing?'Net Δ':'Net exposure'}</th><th className="text-right">Long</th><th className="text-right">Short</th><th className="text-right">Indexed pos.</th></tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/50">{rows.map(row=><tr key={row.marketId+row.cohort} className="hover:bg-[#131c31]/40">
-              <td className="py-2"><button type="button" className="flex items-center gap-2 text-[#e8edfb] hover:text-[#ffb02e]" onClick={()=>onSelectMarket(row.marketId)}>
-                <TokenBadge symbol={marketNames[row.marketId]||row.marketId} size={19}/>
-                {marketNames[row.marketId] || `Market #${row.marketId}`}
-              </button></td>
-              <td className="py-2 capitalize text-slate-300">{row.cohort}</td>
-              <td className={`py-2 text-right font-semibold ${row.deltaNetUsd>=0?'text-[#22e0a1]':'text-[#ff4d6d]'}`}>{formatSignedUsd(row.deltaNetUsd,true)}</td>
-              <td className="py-2 text-right text-[#22e0a1]">{formatUsd(row.currentLongUsd,true)}</td>
-              <td className="py-2 text-right text-[#ff4d6d]">{formatUsd(row.currentShortUsd,true)}</td>
-              <td className="py-2 text-right text-slate-400">{row.positionCount}</td>
-            </tr>)}</tbody>
+            <tbody className="divide-y divide-slate-800/50">{rows.map(row=>{
+              const displayedNet=comparing && row.deltaNetUsd!==null?row.deltaNetUsd:row.currentNetUsd;
+              return <tr key={row.marketId+row.cohort} className="hover:bg-[#131c31]/40">
+                <td className="py-2"><button type="button" className="flex items-center gap-2 text-[#e8edfb] hover:text-[#ffb02e]" onClick={()=>onSelectMarket(row.marketId)}>
+                  <TokenBadge symbol={marketNames[row.marketId]||row.marketId} size={19}/>
+                  {marketNames[row.marketId] || `Market #${row.marketId}`}
+                </button></td>
+                <td className="py-2 capitalize text-slate-300">{row.cohort}</td>
+                <td className={`py-2 text-right font-semibold ${displayedNet>=0?'text-[#22e0a1]':'text-[#ff4d6d]'}`}>{formatSignedUsd(displayedNet,true)}</td>
+                <td className="py-2 text-right text-[#22e0a1]">{formatUsd(row.currentLongUsd,true)}</td>
+                <td className="py-2 text-right text-[#ff4d6d]">{formatUsd(row.currentShortUsd,true)}</td>
+                <td className="py-2 text-right text-slate-400">{row.positionCount}</td>
+              </tr>;
+            })}</tbody>
           </table>
         </div>}
-      <p className="text-[10px] text-[#ffb02e]">These are successive samples of indexed account positions—not confirmed new buys/sells or an exchange-wide flow measure. Missing wallet updates and mark-price changes can affect reported differences.</p>
+      <p className="text-[10px] text-[#ffb02e]">
+        {comparing
+          ? 'Changes compare two samples of indexed account positions, not confirmed buys/sells. Wallet refreshes and mark-price changes may affect differences.'
+          : 'Current exposure is a single sampled cohort view, not a trade-change signal or a comprehensive venue-wide snapshot.'}
+      </p>
     </>}
   </section>;
 };

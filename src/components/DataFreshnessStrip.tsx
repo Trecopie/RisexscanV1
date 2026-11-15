@@ -54,6 +54,10 @@ const age=(time:number|null,now:number) => {
  * prove oracle ticks have arrived recently. */
 export const DataFreshnessStrip:React.FC = () => {
   const {connectionState,lastOracleAt}=useMarketStream();
+  // The detailed telemetry is for opt-in debugging, not the public dashboard.
+  // This is UI discoverability only, not an authentication/security boundary.
+  const diagnosticsEnabled=typeof window!=='undefined' &&
+    new URLSearchParams(window.location.search).get('diagnostics')==='1';
   const [details,setDetails]=useState(false);
   const [snapshot,setSnapshot]=useState<Freshness|null>(null);
   const [metrics,setMetrics]=useState<LatencyRow[]>([]);
@@ -120,16 +124,15 @@ export const DataFreshnessStrip:React.FC = () => {
           <span className={snapshot?.databaseConnected ? 'text-[#22e0a1]' : 'text-[#ffb02e]'}>
             History {snapshot?.databaseConnected ? 'PostgreSQL' : 'ephemeral'}
           </span>
-          <span className="text-slate-500">Indexed accounts ≠ all-time venue coverage</span>
         </div>
-        <button
+        {diagnosticsEnabled && <button
           type="button"
           onClick={()=>setDetails(v=>!v)}
           aria-expanded={details}
           className="shrink-0 rounded border border-slate-800 px-2 py-0.5 text-slate-300 hover:border-[#ffb02e]/40 hover:text-[#ffb02e]"
-        >{details?'Hide diagnostics':'Data & latency'}</button>
+        >{details?'Hide diagnostics':'Data & latency'}</button>}
       </div>
-      {details && (
+      {diagnosticsEnabled && details && (
         <div className="mx-auto max-w-[1440px] space-y-2 border-t border-slate-800/50 px-4 py-3 text-xs text-slate-400 sm:px-6">
           <p>
             {snapshot?.enrichedTraders.toLocaleString() || '—'} enriched / {snapshot?.indexedTraders.toLocaleString() || '—'} discovered accounts.
