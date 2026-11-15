@@ -73,6 +73,7 @@ export const TickerDetailPage: React.FC<{
     marketId:'',resolution:'',rows:[],restRevision:0,
   });
   const [resolution, setResolution] = useState('1H');
+  const [candleSyncNonce,setCandleSyncNonce] = useState(0);
   const candles = candleState.marketId === marketId && candleState.resolution === resolution
     ? candleState.rows : [];
   const resolutionRef = React.useRef(resolution);
@@ -205,12 +206,12 @@ export const TickerDetailPage: React.FC<{
     // as the primary live chart source.
     const timer=setInterval(()=>{
       if(document.visibilityState==='visible')loadCandles();
-    },60000);
+    },20000);
     return () => {
       candleAbortRef.current?.abort();
       clearInterval(timer);
     };
-  }, [marketId, resolution]);
+  }, [marketId, resolution, candleSyncNonce]);
 
   // Live WS trades and L2 depth for only the selected ticker.
   // Coalesce orderbook deltas so they don't rerender the full ticker on every level.
@@ -220,6 +221,7 @@ export const TickerDetailPage: React.FC<{
     let bookUpdateTimer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
     let disposed = false;
+    let hadConnected = false;
     const bookCache: OrderbookCache = new Map();
     const rawBook = emptyRawBook();
     let receivedBookSnapshot = false;
@@ -249,6 +251,10 @@ export const TickerDetailPage: React.FC<{
         const socket = new WebSocket('wss://ws.rise.trade/ws');
         ws = socket;
         socket.onopen = () => {
+          // A reconnection can miss executions. Repair earlier OHLCV buckets
+          // with REST immediately instead of awaiting the next reconciliation.
+          if (hadConnected) setCandleSyncNonce(n=>n+1);
+          hadConnected = true;
           attempt = 0;
           socket.send(JSON.stringify({method:'subscribe',params:{channel:'trades',market_ids:[Number(marketId)]}}));
           socket.send(JSON.stringify({method:'subscribe',params:{channel:'orderbook',market_ids:[Number(marketId)]}}));
@@ -346,6 +352,9 @@ export const TickerDetailPage: React.FC<{
           if (disposed) return;
           setBookIsLive(false);
           if (document.visibilityState === 'hidden') return;
+          // Immediately fall back to a fresh REST book rather than displaying
+          // the last received WS book throughout the reconnect backoff.
+          void loadMarketData(false);
           const delay = Math.min(30000, 1500 * Math.pow(2, attempt++));
           reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
         };
