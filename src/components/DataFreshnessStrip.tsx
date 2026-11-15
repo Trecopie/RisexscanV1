@@ -14,6 +14,30 @@ interface Freshness {
   historicalCoverageComplete:boolean;
 }
 interface LatencyRow { route:string; requests:number; p50Ms:number; p95Ms:number; errorRatePct:number;sampleSize:number }
+interface BrowserPerf {
+  ttfbMs:number|null;
+  firstContentfulPaintMs:number|null;
+  lcpMs:number|null;
+  apiResourceSamples:number;
+  apiRequestP95Ms:number|null;
+}
+const browserPerformance = (lcp:number|null):BrowserPerf => {
+  const nav=performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming|undefined;
+  const fcp=performance.getEntriesByName('first-contentful-paint')[0] as PerformanceEntry|undefined;
+  const resourceDurations=performance.getEntriesByType('resource')
+    .filter((entry)=>entry.name.includes('/api/'))
+    .map((entry)=>entry.duration).filter(Number.isFinite).sort((a,b)=>a-b);
+  const p95=resourceDurations.length>0
+    ? resourceDurations[Math.ceil(resourceDurations.length*.95)-1] : null;
+  return {
+    ttfbMs:nav?Math.round(nav.responseStart-nav.requestStart):null,
+    firstContentfulPaintMs:fcp?Math.round(fcp.startTime):null,
+    lcpMs:lcp!==null?Math.round(lcp):null,
+    apiResourceSamples:resourceDurations.length,
+    apiRequestP95Ms:p95!==null?Math.round(p95):null,
+  };
+};
+
 
 const age=(time:number|null,now:number) => {
   if (!time) return 'not available';
@@ -30,6 +54,8 @@ export const DataFreshnessStrip:React.FC = () => {
   const [details,setDetails]=useState(false);
   const [snapshot,setSnapshot]=useState<Freshness|null>(null);
   const [metrics,setMetrics]=useState<LatencyRow[]>([]);
+  const [browserPerf,setBrowserPerf]=useState<BrowserPerf|null>(null);
+  const [latestLcp,setLatestLcp]=useState<number|null>(null);
   const [now,setNow]=useState(Date.now());
 
   useEffect(() => {
@@ -61,6 +87,22 @@ export const DataFreshnessStrip:React.FC = () => {
     return()=>{controller.abort();clearInterval(timer);};
   },[details]);
 
+  useEffect(()=>{
+    if(!details)return;
+    let observer:PerformanceObserver|null=null;
+    try {
+      observer=new PerformanceObserver((entryList)=>{
+        const last=entryList.getEntries().at(-1);
+        if(last)setLatestLcp(last.startTime);
+      });
+      observer.observe({type:'largest-contentful-paint',buffered:true});
+    } catch { /* LCP unsupported in some embedded browsers */ }
+    const tick=()=>setBrowserPerf(browserPerformance(latestLcp));
+    tick();
+    const interval=setInterval(tick,5000);
+    return()=>{observer?.disconnect();clearInterval(interval);};
+  },[details,latestLcp]);
+
   const oracleFresh=connectionState==='connected' && lastOracleAt!==null && now-lastOracleAt < 12000;
   return (
     <div className="relative z-10 border-b border-slate-800/60 bg-[#070b14]/95">
@@ -91,6 +133,15 @@ export const DataFreshnessStrip:React.FC = () => {
             Historical wallet and trade coverage is incomplete. Live observed trades {snapshot?.tradesWsConnected?'connected':'disconnected'}.
             {snapshot?.tradeEventsDropped ? ` ${snapshot.tradeEventsDropped} events dropped in this process.` : ''}
           </p>
+          {browserPerf && (
+            <div className="flex flex-wrap gap-x-5 gap-y-1 text-[10px] font-mono text-slate-400">
+              <span>Browser TTFB {browserPerf.ttfbMs===null?'—':`${browserPerf.ttfbMs}ms`}</span>
+              <span>FCP {browserPerf.firstContentfulPaintMs===null?'—':`${browserPerf.firstContentfulPaintMs}ms`}</span>
+              <span>LCP {browserPerf.lcpMs===null?'—':`${browserPerf.lcpMs}ms`}</span>
+              <span>API network p95 {browserPerf.apiRequestP95Ms===null?'—':`${browserPerf.apiRequestP95Ms}ms`} ({browserPerf.apiResourceSamples} requests)</span>
+              <span className="text-slate-500">Browser-local; not uploaded or compared across users</span>
+            </div>
+          )}
           {metrics.length > 0 && (
             <div className="overflow-x-auto">
               <table className="w-full max-w-2xl text-left font-mono text-[10px] tabular-nums">
