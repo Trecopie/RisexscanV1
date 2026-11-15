@@ -1826,7 +1826,7 @@ async function startServer() {
     const now=Date.now();
     const toNs=(BigInt(now)*1000000n).toString();
     const fromNs=(BigInt(now-40*3600000)*1000000n).toString();
-    const series:Record<string,{points:number[];lastCandleAt:number|null}>={};
+    const series:Record<string,{points:Array<{time:number;price:number}>;lastCandleAt:number|null}>={};
     for(let offset=0;offset<unique.length;offset+=6){
       const batch=await Promise.allSettled(unique.slice(offset,offset+6).map(async (id)=>{
         const result=await cachedCall(`sparkline:${id}`,300000,async()=>{
@@ -1837,7 +1837,7 @@ async function startServer() {
           })).filter((p:{time:number;value:number}) => p.time > now-86400000 && p.time <= now+300000 && p.value>0)
             .sort((a:{time:number},b:{time:number})=>a.time-b.time);
           return {
-            points:values.slice(-30).map((p:{value:number})=>p.value),
+            points:values.slice(-30).map((p:{time:number;value:number})=>({time:p.time,price:p.value})),
             lastCandleAt:values[values.length-1]?.time||null,
           };
         });
