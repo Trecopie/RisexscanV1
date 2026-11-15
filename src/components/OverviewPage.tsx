@@ -1446,7 +1446,7 @@ export const OverviewPage: React.FC<{
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 tabular-nums">
-                {topTraders.slice(0, 10).map((t, idx) => (
+                {topTraders.slice(0, 15).map((t, idx) => (
                   <tr
                     key={t.address}
                     onClick={() => onSelectWallet(t.address)}
