@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import type { IndexedTrader, LeaderboardResponse, TimeframeKey } from '../types/risex';
 import { formatPct, formatSignedUsd, formatUsd, shortAddress } from '../utils/format';
+import {formatTraderDisplay} from '../utils/traderDisplay';
 import { LeaderboardSyncDiagnostic } from './LeaderboardSyncDiagnostic';
 import { TraderAvatar } from './TraderAvatar';
 
@@ -304,9 +305,13 @@ export const LeaderboardPage: React.FC<{
                           {rank === 1 && <Crown className="h-3 w-3" />}
                           #{rank}
                         </span>
-                        <span className="truncate font-display text-base font-bold text-[#e8edfb]">
-                          {trader.username || shortAddress(trader.address)}
+                        <span className="truncate font-display text-base font-bold text-[#e8edfb]"
+                          title={formatTraderDisplay(trader.address,trader.username).attribution||undefined}>
+                          {formatTraderDisplay(trader.address,trader.username).name}
                         </span>
+                        {formatTraderDisplay(trader.address,trader.username).provisionalVault&&
+                          <span className="shrink-0 rounded border border-[#ffb02e]/40 px-1 text-[9px] text-[#ffb02e]"
+                            title="Vault attribution copied from V2 UI; not independently protocol verified">Unverified vault</span>}
                       </div>
                       <div className="mt-0.5 flex items-center gap-2 text-[11px] font-mono text-slate-400">
                         <span>{shortAddress(trader.address, 6, 4)}</span>
