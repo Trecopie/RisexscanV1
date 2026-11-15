@@ -37,10 +37,15 @@ const HistorySeries:React.FC<{title:string;subtitle:string;values:ChartPoint[];c
         <svg viewBox="0 0 460 110" className="mt-3 h-[100px] w-full" role="img" aria-label={`Recorded values of ${title}, ${values.length} points`} preserveAspectRatio="none">
           <path d={actualLine(values)} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke"/>
         </svg>
-        : <div className="mt-4 flex h-[100px] items-center justify-center text-xs text-slate-500">Awaiting at least two recorded observations.</div>}
+        : values.length===1 ?
+          <div className="mt-3 flex h-[100px] flex-col items-center justify-center gap-2 text-xs text-slate-400" role="status">
+            <span className="h-2.5 w-2.5 rounded-full" style={{backgroundColor:color}} aria-hidden="true"/>
+            <span>1 recorded observation — another is needed to draw a trend.</span>
+          </div>
+        : <div className="mt-4 flex h-[100px] items-center justify-center text-xs text-slate-500">No observations recorded yet.</div>}
       {values.length>0 && <div className="flex justify-between text-[10px] font-mono text-slate-500">
         <span>{new Date(values[0].time).toLocaleDateString()}</span>
-        <span>{new Date(values[values.length-1].time).toLocaleDateString()}</span>
+        {values.length>1 && <span>{new Date(values[values.length-1].time).toLocaleDateString()}</span>}
       </div>}
     </div>;
   };
@@ -98,18 +103,21 @@ export const HistoricalInsights:React.FC=()=>{
     ) : <>
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
         <HistorySeries title="Recorded Open Interest" subtitle="Hourly official REST OI snapshots · USD" color="#ffb02e" values={parsed.oi}/>
-        <HistorySeries title="Cumulative Observed Volume" subtitle="Last 90 observed days · WS + REST catch-up, possibly incomplete" color="#22e0a1" values={parsed.cumulativeVolume}/>
+        <HistorySeries title="Cumulative Observed Volume" subtitle="Up to 90 sampled UTC days · WS + REST catch-up, incomplete" color="#22e0a1" values={parsed.cumulativeVolume}/>
         <HistorySeries title="Cumulative Disclosed Fees" subtitle="Reported fees only · incomplete coverage, not total venue fees" color="#46a6ff" values={parsed.cumulativeFees}/>
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-800 pt-2 text-[10px] font-mono text-slate-400">
         <span>Observed trade events {data.coverage.observedTrades.toLocaleString()}</span>
         <span>Fees disclosed on {parsed.reportedFeeEvents.toLocaleString()}/{parsed.observedTradeEvents.toLocaleString()} sampled trades</span>
-        <span>First recorded {data.coverage.firstTradeAt ? new Date(data.coverage.firstTradeAt).toLocaleString() : 'not yet'}</span>
+        <span>Earliest sampled trade timestamp {data.coverage.firstTradeAt ? new Date(data.coverage.firstTradeAt).toLocaleString() : 'not yet'}</span>
         <span>OI history begins {data.coverage.firstSnapshotAt ? new Date(data.coverage.firstSnapshotAt).toLocaleString() : 'not yet'}</span>
       </div>
       <p className="text-[10px] text-[#ffb02e]">
         Partial coverage: earlier history, collector downtime and any dropped events are not represented.
         Hourly REST OI samples and observed trade totals have different data origins and must not be equated.
+      </p>
+      <p className="text-[10px] text-slate-500">
+        Compare independent venue-wide metrics on <a href="https://defillama.com/protocol/risex" target="_blank" rel="noopener noreferrer" className="text-[#46a6ff] underline underline-offset-2 hover:text-white">DefiLlama (RISEx)</a>. Its TVL, open interest and cumulative perp volume are third-party aggregates, not the observed trade/fee series above.
       </p>
     </>}
   </section>;
