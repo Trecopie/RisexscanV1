@@ -805,6 +805,11 @@ export const WalletPage: React.FC<{
           {/* TAB 1: OPEN POSITIONS */}
           {activeTab === 'positions' && (
             <div className="sunrise-card overflow-hidden rounded-2xl">
+              {(data.realizedDataAvailable === false || data.tradeHistoryAvailable === false) && (
+                <div className="border-b border-[#ffb02e]/30 bg-[#ffb02e]/10 px-4 py-2 text-xs text-[#ffb02e]">
+                  The historical realized-PnL or fills endpoint is temporarily unavailable; open-position partial realized PnL cannot be verified. Unrealized PnL still comes from the live portfolio.
+                </div>
+              )}
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead className="border-b border-slate-800 bg-[#090e1a]/80 text-[11px] uppercase tracking-wider text-slate-400">
@@ -1014,6 +1019,11 @@ export const WalletPage: React.FC<{
                 </div>
               </div>
 
+              {(data.realizedDataAvailable === false || data.tradeHistoryAvailable === false) && (
+                <div className="rounded-xl border border-[#ffb02e]/40 bg-[#ffb02e]/10 px-4 py-3 text-xs text-[#ffb02e]">
+                  RISEx historical data is temporarily unavailable. Please retry the profile later; a zero or blank aggregate here does not mean the account has no realized PnL.
+                </div>
+              )}
               <div className="rounded-xl border border-slate-800 bg-[#090e1a]/70 px-4 py-3 text-xs text-slate-400">
                 {rzViewMode === 'cycles'
                   ? 'Aggregated Trades combines all partial realizations belonging to a fully closed position (including reversals), and excludes partial realizations on currently open positions. PnL is credited to the final close date, so daily bars may differ from the settlement-date calendar.'
