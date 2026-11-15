@@ -33,6 +33,7 @@ import { LongShortBiasBar } from './Charts';
 import { TradingViewChart } from './TradingViewChart';
 import { LiquidityDepthHeatmap } from './LiquidityDepthHeatmap';
 import { useMarketStream } from '../context/MarketWebSocketContext';
+import { parseWsMarketMessage, updateOrderbookAndGetMid, type OrderbookCache } from '../utils/marketWsPatch';
 import { calcLiqDistancePct, LiqDistanceBadge, TokenBadge, TraderAvatar } from './TraderAvatar';
 
 interface TickerAnalyticsResponse {
@@ -73,6 +74,8 @@ export const TickerDetailPage: React.FC<{
   const [trades, setTrades] = useState<MarketTrade[]>([]);
   const [fundingHistory, setFundingHistory] = useState<FundingRateRecord[]>([]);
   const [bookTab, setBookTab] = useState<'book' | 'trades'>('book');
+  const [bookIsLive, setBookIsLive] = useState(false);
+  const bookLiveRef = React.useRef(false);
   const [loading, setLoading] = useState(true);
 
   const [posSort, setPosSort] = useState<PosSortKey>('pnl');
@@ -105,13 +108,13 @@ export const TickerDetailPage: React.FC<{
     try {
       const [anRes, obRes, trRes, fnRes] = await Promise.allSettled([
         safeJson(`/api/ticker/${marketId}/analytics`),
-        safeJson(`/api/markets/${marketId}/orderbook`),
+        bookLiveRef.current ? Promise.resolve(null) : safeJson(`/api/markets/${marketId}/orderbook`),
         safeJson(`/api/markets/${marketId}/trades?limit=60`),
         safeJson(`/api/markets/${marketId}/funding`),
       ]);
       if (controller.signal.aborted) return;
       if (anRes.status === 'fulfilled' && anRes.value && !anRes.value.error) setAnalytics(anRes.value);
-      if (obRes.status === 'fulfilled' && obRes.value && !obRes.value.error) {
+      if (obRes.status === 'fulfilled' && obRes.value && !obRes.value.error && !bookLiveRef.current) {
         setOrderbook({ bids: obRes.value.bids || [], asks: obRes.value.asks || [] });
       }
       if (trRes.status === 'fulfilled' && trRes.value?.trades) setTrades(trRes.value.trades);
@@ -153,49 +156,64 @@ export const TickerDetailPage: React.FC<{
     return () => candleAbortRef.current?.abort();
   }, [marketId, resolution]);
 
-  // Live WS trades for active ticker with automatic reconnect backoff
+  // Live WS trades and L2 depth for only the selected ticker.
+  // Coalesce orderbook deltas so they don't rerender the full ticker on every level.
   useEffect(() => {
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let bookUpdateTimer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
     let disposed = false;
+    const bookCache: OrderbookCache = new Map();
+    let receivedBookSnapshot = false;
+    bookLiveRef.current = false;
+    setBookIsLive(false);
+
+    const flushBook = () => {
+      bookUpdateTimer = null;
+      const state = bookCache.get(String(marketId));
+      if (!state || disposed) return;
+      const bids = [...state.bids].sort((a, b) => b[0] - a[0]).slice(0, 50)
+        .map(([price, size]) => ({ price: String(price), size: String(size) }));
+      const asks = [...state.asks].sort((a, b) => a[0] - b[0]).slice(0, 50)
+        .map(([price, size]) => ({ price: String(price), size: String(size) }));
+      if (bids.length === 0 || asks.length === 0) return;
+      bookLiveRef.current = true;
+      setBookIsLive(true);
+      setOrderbook({ bids, asks });
+    };
 
     const connect = () => {
-      if (disposed) return;
+      if (disposed || document.visibilityState === 'hidden') return;
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
       try {
-        ws = new WebSocket('wss://ws.rise.trade/ws');
-        ws.onopen = () => {
+        const socket = new WebSocket('wss://ws.rise.trade/ws');
+        ws = socket;
+        socket.onopen = () => {
           attempt = 0;
-          ws?.send(
-            JSON.stringify({
-              method: 'subscribe',
-              params: { channel: 'trades', market_ids: [Number(marketId)] },
-            })
-          );
+          socket.send(JSON.stringify({method:'subscribe',params:{channel:'trades',market_ids:[Number(marketId)]}}));
+          socket.send(JSON.stringify({method:'subscribe',params:{channel:'orderbook',market_ids:[Number(marketId)]}}));
         };
-        ws.onmessage = (ev) => {
+        socket.onmessage = (ev) => {
+          if (disposed || document.visibilityState === 'hidden') return;
           try {
-            const msg = JSON.parse(ev.data);
-            const payload = msg?.data;
-            if (!payload) return;
-            const items = Array.isArray(payload) ? payload : payload.trades || [payload];
-            const fresh: MarketTrade[] = items
-              .filter(
-                (t: any) =>
-                  t &&
-                  t.price &&
-                  t.size &&
-                  (!t.market_id || String(t.market_id) === String(marketId))
-              )
-              .map((t: any) => ({
-                id: String(t.id || `${Date.now()}-${Math.random()}`),
-                maker_side: String(t.maker_side || t.side || 'buy'),
-                price: String(t.price),
-                size: String(t.size),
-                time: String(t.time || Date.now()),
-                block_number: String(t.block_number || ''),
-                log_index: String(t.log_index || ''),
-              }));
+            // Share the same validated RISEx WS decoder as the market-wide feed.
+            // RISEx sends market ID, block and timestamp in the message envelope,
+            // not necessarily inside its trade data object.
+            const frames = parseWsMarketMessage(JSON.parse(String(ev.data)));
+            for (const frame of frames) {
+              if (frame.kind !== 'orderbook' || frame.marketId !== String(marketId)) continue;
+              // A delta without a full initial book cannot be displayed as a
+              // complete L2 snapshot, even if it updates both sides.
+              if (!receivedBookSnapshot && !frame.isSnapshot) continue;
+              if (frame.isSnapshot) receivedBookSnapshot = true;
+              updateOrderbookAndGetMid(bookCache, frame);
+              if (!bookUpdateTimer) bookUpdateTimer = setTimeout(flushBook, 120);
+            }
+            const fresh: MarketTrade[] = frames
+              .filter((frame) => frame.kind === 'trade' && frame.marketId === String(marketId))
+              .map((frame) => frame.kind === 'trade' ? frame.trade : null)
+              .filter((trade): trade is MarketTrade => trade !== null);
             if (fresh.length > 0) {
               setTrades((prev) => {
                 const seen = new Set(prev.map((x) => x.id));
@@ -229,21 +247,43 @@ export const TickerDetailPage: React.FC<{
             // ignore
           }
         };
-        ws.onclose = () => {
+        socket.onclose = () => {
+          if (ws !== socket) return;
+          ws = null;
+          receivedBookSnapshot = false;
+          bookCache.clear();
+          if (bookUpdateTimer) { clearTimeout(bookUpdateTimer); bookUpdateTimer = null; }
+          bookLiveRef.current = false;
           if (disposed) return;
+          setBookIsLive(false);
+          if (document.visibilityState === 'hidden') return;
           const delay = Math.min(30000, 1500 * Math.pow(2, attempt++));
-          reconnectTimer = setTimeout(connect, delay);
+          reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
         };
-        ws.onerror = () => {
-          ws?.close();
+        socket.onerror = () => {
+          socket.close();
         };
       } catch {
-        // ignore
+        if (!disposed) {
+          const delay = Math.min(30000, 1500 * Math.pow(2, attempt++));
+          reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
+        }
       }
     };
 
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') ws?.close();
+      else {
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        connect();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
     connect();
     return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      if (bookUpdateTimer) clearTimeout(bookUpdateTimer);
+      bookLiveRef.current = false;
       disposed = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       try {
@@ -447,7 +487,7 @@ export const TickerDetailPage: React.FC<{
                 bookTab === 'book' ? 'bg-[#131c31] text-[#ffb02e]' : 'text-slate-400'
               }`}
             >
-              L2 Orderbook
+              L2 Orderbook {bookIsLive && <span className="ml-1 text-[#22e0a1]" title="Live orderbook stream">●</span>}
             </button>
             <button
               type="button"

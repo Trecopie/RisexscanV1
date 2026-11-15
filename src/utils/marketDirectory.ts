@@ -4,11 +4,14 @@ import type { RisexMarket } from '../types/risex';
 export function filterDirectoryMarkets<T extends RisexMarket>(
   markets: T[],
   category: string,
-  search: string
+  search: string,
+  includeInactive = false
 ): T[] {
   const selectedCategory = category.toUpperCase();
   const q = search.trim().toLowerCase();
   return markets.filter((market) => {
+    // A delisted/paused market is not part of the live venue universe.
+    if (!includeInactive && market.active === false) return false;
     if (selectedCategory !== 'ALL' && (market.category || '').toUpperCase() !== selectedCategory) {
       return false;
     }

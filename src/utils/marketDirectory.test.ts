@@ -58,3 +58,14 @@ test('bad or negative upstream numeric fields do not inflate volume or OI', () =
     marketCount: 1, volume24h: 0, openInterestUsd: 0,
   });
 });
+
+test('a halted market is excluded from live count, volume and OI unless explicitly included', () => {
+  const halted = { ...sample('99', 'stocks', '9000', '20', '200', 'DELISTED/USDC'), active: false };
+  const universe = [...markets, halted];
+  assert.deepEqual(summarizeDirectoryMarkets(filterDirectoryMarkets(universe, 'ALL', '')), {
+    marketCount: 4, volume24h: 2000, openInterestUsd: 800,
+  });
+  assert.deepEqual(summarizeDirectoryMarkets(filterDirectoryMarkets(universe, 'ALL', '', true)), {
+    marketCount: 5, volume24h: 11000, openInterestUsd: 4800,
+  });
+});

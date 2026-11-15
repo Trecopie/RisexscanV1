@@ -584,38 +584,49 @@ export const LongShortBiasBar: React.FC<{
   );
 };
 
-export const MiniSparkline: React.FC<{
-  seed: string;
+/**
+ * Honest, compact 24h *change meter* (NOT a historical sparkline).
+ * The position and width reflect the actual RISEx 24h % change. A time-series
+ * line would require OHLCV history; never synthesize one from a ticker name.
+ */
+export const MarketMoveMeter: React.FC<{
   changePct: number;
   width?: number;
   height?: number;
-}> = ({ seed, changePct, width = 76, height = 24 }) => {
-  // Deterministic curve shaped smoothly toward the live 24h change direction
-  const isUp = changePct >= 0;
-  const color = isUp ? '#22e0a1' : '#ff4d6d';
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
-  const pts: number[] = [];
-  let cur = 0;
-  for (let i = 0; i < 10; i++) {
-    const wave = Math.sin((h % 17) + i * 0.9) * 0.35;
-    cur = (i / 9) * (isUp ? 1 : -1) + wave;
-    pts.push(cur);
-  }
-  const min = Math.min(...pts);
-  const max = Math.max(...pts);
-  const span = max - min || 1;
-  const d = pts
-    .map((v, i) => {
-      const x = (i / (pts.length - 1)) * width;
-      const y = height - 3 - ((v - min) / span) * (height - 6);
-      return `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
-    })
-    .join(' ');
+}> = ({ changePct, width = 76, height = 24 }) => {
+  const pct = Number.isFinite(changePct) ? changePct : 0;
+  const center = width / 2;
+  // A fixed scale is comparable across assets; the meter clips at ±25%.
+  const range = 25;
+  const extent = Math.min(center - 3, (Math.abs(pct) / range) * (center - 3));
+  const positive = pct >= 0;
+  const color = positive ? '#22e0a1' : '#ff4d6d';
+  const barWidth = pct === 0 ? 0 : Math.max(1.4, extent);
+  const y = Math.max(2, (height - 7) / 2);
+  const label = `24h change ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%. Meter scale ±25%, clipped beyond that. Not historical price data.`;
 
   return (
-    <svg width={width} height={height} className="shrink-0 overflow-visible">
-      <path d={d} fill="none" stroke={color} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" />
+    <svg
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      className="shrink-0"
+      role="img"
+      aria-label={label}
+    >
+      <title>{label}</title>
+      <rect x={1} y={y} width={width - 2} height={7} rx={3.5} fill="#131c31" />
+      <line x1={center} y1={y - 2} x2={center} y2={y + 9} stroke="#8492ad" strokeWidth={1} />
+      {barWidth > 0 && (
+        <rect
+          x={positive ? center : center - barWidth}
+          y={y + 1}
+          width={barWidth}
+          height={5}
+          rx={2.5}
+          fill={color}
+        />
+      )}
     </svg>
   );
 };

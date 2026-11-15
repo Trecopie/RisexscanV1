@@ -99,6 +99,10 @@ export interface MarketDashboardData {
   marketCount: number;
   totalVolume24h: number;
   totalOpenInterestUsd: number;
+  advancers: number;
+  decliners: number;
+  unchanged: number;
+  advancersPct: number;
   topVolume: MarketDashboardEntry[];
   gainers: MarketDashboardEntry[];
   losers: MarketDashboardEntry[];
@@ -332,9 +336,12 @@ export function computeTakerFlow(trades: MarketTrade[]): TakerFlowSummary {
 
   for (const tr of trades) {
     const usd = toNum(tr.price) * toNum(tr.size);
-    const sideStr = String(tr.maker_side || '').toLowerCase();
-    const isBuy = sideStr.includes('buy') || sideStr === '0';
-    if (isBuy) {
+    // RISEx reports MAKER side. Taker flow is the opposite of that side:
+    // maker 0/BUY -> taker SELL; maker 1/SELL -> taker BUY.
+    const makerSide = String(tr.maker_side ?? '').toLowerCase().trim();
+    if (!['0', '1', 'buy', 'sell'].includes(makerSide)) continue;
+    const takerIsBuy = makerSide === '1' || makerSide === 'sell';
+    if (takerIsBuy) {
       buyCount += 1;
       buyUsd += usd;
     } else {
@@ -413,6 +420,9 @@ export function buildMarketDashboard(
   const entries: MarketDashboardEntry[] = [];
   let totalVolume24h = 0;
   let totalOpenInterestUsd = 0;
+  let advancers = 0;
+  let decliners = 0;
+  let unchanged = 0;
 
   for (const m of markets) {
     if (m.active === false) continue;
@@ -428,6 +438,9 @@ export function buildMarketDashboard(
     const volume24h = toNum(m.quote_volume_24h);
     const openInterestUsd = toNum(m.open_interest) * markPrice;
     const changePct = calcMarketChangePct(markPrice, m.change_24h);
+    if (changePct > 0) advancers++;
+    else if (changePct < 0) decliners++;
+    else unchanged++;
     const fundingAprPct = toNum(m.current_funding_rate) * 24 * 365 * 100;
 
     totalVolume24h += volume24h;
@@ -452,11 +465,13 @@ export function buildMarketDashboard(
     .sort((a, b) => b.volume24h - a.volume24h || b.openInterestUsd - a.openInterestUsd)
     .slice(0, limit);
 
-  const gainers = [...entries]
+  const gainers = entries
+    .filter((entry) => entry.changePct > 0)
     .sort((a, b) => b.changePct - a.changePct || b.volume24h - a.volume24h)
     .slice(0, limit);
 
-  const losers = [...entries]
+  const losers = entries
+    .filter((entry) => entry.changePct < 0)
     .sort((a, b) => a.changePct - b.changePct || b.volume24h - a.volume24h)
     .slice(0, limit);
 
@@ -465,6 +480,10 @@ export function buildMarketDashboard(
     marketCount: entries.length,
     totalVolume24h,
     totalOpenInterestUsd,
+    advancers,
+    decliners,
+    unchanged,
+    advancersPct: entries.length > 0 ? advancers / entries.length * 100 : 0,
     topVolume,
     gainers,
     losers,

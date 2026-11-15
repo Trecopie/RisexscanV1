@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   applyMarketPricePatch,
+  mergeSnapshotWithRecentOracle,
   parseOracleWei,
   applyWsBatchToMarkets,
   parseWsMarketMessage,
@@ -74,12 +75,19 @@ test('parseWsMarketMessage parses trades, orderbook, and funding messages cleanl
     type: 'snapshot',
     data: {
       market_id: 1,
-      bids: [{ price: '91990', quantity: '2.0' }],
-      asks: [{ price: '92010', quantity: '1.5' }],
+      bids: [{ price: '91990000000000000000000', quantity: '2000000000000000000' }],
+      asks: [{ price: '92010000000000000000000', quantity: '1500000000000000000' }],
     },
   });
   assert.equal(bookFrames.length, 1);
   assert.equal(bookFrames[0].kind, 'orderbook');
+  if (bookFrames[0].kind === 'orderbook') {
+    assert.equal(bookFrames[0].bids[0].price, 91990);
+    assert.equal(bookFrames[0].bids[0].quantity, 2);
+    assert.equal(bookFrames[0].asks[0].price, 92010);
+    assert.equal(bookFrames[0].asks[0].quantity, 1.5);
+    assert.equal(updateOrderbookAndGetMid(new Map(), bookFrames[0]), 92000);
+  }
 
   const fundingFrames = parseWsMarketMessage({
     channel: 'funding',
@@ -119,20 +127,19 @@ test('updateOrderbookAndGetMid handles snapshots, incremental level deletes, and
   assert.equal(mid2, 102);
 });
 
-test('applyMarketPricePatch preserves 24h open baseline and updates volume/high/low accurately', () => {
+test('applyMarketPricePatch maintains oracle mark and baseline without fabricating rolling 24h aggregates', () => {
   // mark 91000, change_24h +1000 => open24h = 90000
   const m = mkMarket();
   const updated = applyMarketPricePatch(m, {
     markPrice: 92000,
     lastPrice: 92000,
-    tradeVolumeUsd: 46000,
   });
   assert.equal(updated.mark_price, '92000');
   assert.equal(updated.last_price, '92000');
   assert.equal(updated.change_24h, '2000');
-  assert.equal(updated.high_24h, '92000');
+  assert.equal(updated.high_24h, '91000');
   assert.equal(updated.low_24h, '89000');
-  assert.equal(updated.quote_volume_24h, '1046000');
+  assert.equal(updated.quote_volume_24h, '1000000');
 });
 
 test('applyWsBatchToMarkets batches updates and skips untouched arrays cleanly', () => {
@@ -170,9 +177,11 @@ test('applyWsBatchToMarkets batches updates and skips untouched arrays cleanly',
   ]);
 
   assert.equal(res.changed, true);
-  assert.equal(res.markets[0].mark_price, '92000');
-  assert.equal(res.markets[1].mark_price, '2010');
-  assert.equal(res.markets[1].change_24h, '10');
+  assert.equal(res.markets[0].mark_price, '91000'); // trade does not overwrite oracle
+  assert.equal(res.markets[0].last_price, '92000');
+  assert.equal(res.markets[0].quote_volume_24h, '1000000');
+  assert.equal(res.markets[1].mark_price, '2000'); // midpoint is not mark
+  assert.equal(res.markets[1].change_24h, '0');
   assert.equal(res.trades.length, 1);
   assert.equal(res.trades[0].market_name, 'BTC/USDC');
 });
@@ -202,4 +211,101 @@ test('RISEx oracle frames decode 18-decimal mark/index prices without decimal tr
   ]);
   assert.equal(mixed.markets[0].mark_price, '64000');
   assert.equal(mixed.markets[0].last_price, '63990');
+});
+
+test('a later trade or orderbook frame never overwrites a more recent mark', () => {
+  const source = mkMarket({mark_price: '90000', last_price: '90000'});
+  const oracle = parseWsMarketMessage({channel:'oracle',type:'update',data:{
+    prices:{'1':{mark_price:'91000000000000000000000',index_price:'90800000000000000000000'}}
+  }});
+  const afterOracle=applyWsBatchToMarkets([source],new Map(),oracle).markets;
+  const afterTrade=applyWsBatchToMarkets(afterOracle,new Map(),[
+    {kind:'trade', marketId:'1',price:93000,size:1,trade:{
+      id:'t2',maker_side:'0',price:'93000',size:'1',time:'1700000000000000000',block_number:'5',log_index:'1'
+    }}
+  ]).markets;
+  assert.equal(afterTrade[0].mark_price, '91000');
+  assert.equal(afterTrade[0].index_price, '90800');
+  assert.equal(afterTrade[0].last_price, '93000');
+  assert.equal(afterTrade[0].quote_volume_24h, '1000000');
+  assert.equal(afterTrade[0].high_24h, '91000');
+});
+
+test('newer WebSocket marks win over old REST snapshots, but expire cleanly', () => {
+  const snapshot=mkMarket({mark_price:'90000',change_24h:'1000'});
+  const quotes=new Map([['1',{receivedAt:5000,markPrice:91000,indexPrice:90900}]]);
+  const patched=mergeSnapshotWithRecentOracle([snapshot],quotes,5500,2000);
+  assert.equal(patched[0].mark_price,'91000');
+  assert.equal(patched[0].index_price,'90900');
+  assert.equal(patched[0].change_24h,'2000');
+  const expired=mergeSnapshotWithRecentOracle([snapshot],quotes,8001,2000);
+  assert.equal(expired[0],snapshot);
+});
+
+test('public WS trade uses outer block metadata and worker timestamp when inner trade omits it', () => {
+  const frames=parseWsMarketMessage({
+    channel:'trades',type:'update',market_id:'1',block_number:12,log_index:4,
+    worker_timestamp:'1786934140123456789',
+    data:{id:'order-a-order-b',maker_side:0,price:'60000',size:'0.1'}
+  });
+  assert.equal(frames.length,1);
+  assert.equal(frames[0].kind,'trade');
+  if(frames[0].kind === 'trade'){
+    assert.equal(frames[0].trade.maker_side,'0');
+    assert.equal(frames[0].trade.time,'1786934140123456789');
+    assert.equal(frames[0].trade.block_number,'12');
+    assert.equal(frames[0].trade.log_index,'4');
+  }
+});
+
+test('unchanged repeated oracle frames do not cause new market array references or rerenders', () => {
+  const market=mkMarket({mark_price:'91000', index_price:'90900'});
+  const result=applyWsBatchToMarkets([market],new Map(),[
+    {kind:'oracle',marketId:'1',markPrice:91000,indexPrice:90900}
+  ]);
+  assert.equal(result.changed,false);
+  assert.equal(result.markets[0],market);
+});
+
+test('RISEx WebSocket L2 book deltas use 18-decimal wei including zero-size deletes', () => {
+  const cache: OrderbookCache = new Map();
+  const msg = (type: string, bids: unknown[], asks: unknown[]) =>
+    parseWsMarketMessage({channel:'orderbook',type,data:{market_id:'1',bids,asks}});
+  const snapshot=msg('snapshot',
+    [{price:'50000000000000000000000',quantity:'1000000000000000000'}],
+    [{price:'50200000000000000000000',quantity:'2000000000000000000'}]);
+  assert.equal(snapshot.length,1);
+  assert.equal(snapshot[0].kind,'orderbook');
+  if (snapshot[0].kind !== 'orderbook') return;
+  assert.equal(updateOrderbookAndGetMid(cache,snapshot[0]), 50100);
+  assert.equal(cache.get('1')?.bids.get(50000),1);
+  assert.equal(cache.get('1')?.asks.get(50200),2);
+  const delta=msg('update',
+    [{price:'50000000000000000000000',quantity:'0'},
+     {price:'49950000000000000000000',quantity:'750000000000000000'}],
+    []);
+  assert.equal(delta[0].kind,'orderbook');
+  if (delta[0].kind !== 'orderbook') return;
+  assert.equal(updateOrderbookAndGetMid(cache,delta[0]), 50075);
+  assert.equal(cache.get('1')?.bids.has(50000),false);
+  assert.equal(cache.get('1')?.bids.get(49950),0.75);
+  // Decimal trade/REST strings must never be mistaken for wei L2 values.
+  const invalid=msg('update',
+    [{price:'49950.0',quantity:'0.5'}],[]);
+  assert.equal(invalid.length,0);
+});
+
+test('actual RISEx WS trade server timestamp wins over block timestamp for candle alignment', () => {
+  const frames = parseWsMarketMessage({
+    channel:'trades',type:'update',market_id:'2',
+    block_timestamp:'1786934140000000000',
+    timestamp:'1786934140123456789',
+    data:{id:'a:b',maker_side:1,price:'201.25',size:'0.25'},
+  });
+  assert.equal(frames.length,1);
+  assert.equal(frames[0].kind,'trade');
+  if(frames[0].kind === 'trade') {
+    assert.equal(frames[0].trade.time,'1786934140123456789');
+    assert.equal(frames[0].trade.maker_side,'1');
+  }
 });
