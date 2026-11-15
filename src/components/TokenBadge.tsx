@@ -245,15 +245,23 @@ function renderVectorMark(clean: string, sector: MarketSectorId, theme: AssetThe
 /** Explicit, curated logo sources, not guessed from arbitrary ticker strings.
  * The original vector remains the always-available fallback for unknown assets,
  * aliases, CDN failures or assets without a reliable icon. */
+// Use only filenames confirmed to exist in the v0.18.1 CC0 icon bundle.
 const CRYPTO_ICON_SLUGS: Record<string,string> = {
   BTC:'btc', ETH:'eth', SOL:'sol', BNB:'bnb', XRP:'xrp', ADA:'ada',
   DOGE:'doge', AVAX:'avax', DOT:'dot', LTC:'ltc', LINK:'link',
   ATOM:'atom', UNI:'uni', AAVE:'aave', XLM:'xlm', BCH:'bch',
   XMR:'xmr', ZEC:'zec', FIL:'fil', TRX:'trx', ETC:'etc', EOS:'eos',
   ALGO:'algo', XTZ:'xtz', MATIC:'matic', MKR:'mkr',
-  SHIB:'shib', COMP:'comp', CRV:'crv', DASH:'dash', ZRX:'zrx',
-  NEAR:'near', ICP:'icp', HBAR:'hbar', INJ:'inj', OP:'op', ARB:'arb',
-  APT:'apt', SUI:'sui', PEPE:'pepe', SEI:'sei',
+  COMP:'comp', CRV:'crv', DASH:'dash', ZRX:'zrx', ICP:'icp'
+};
+// Independently checked against Simple Icons repository source.
+// Modern coins missing from the older CC0 set get true SVG marks,
+// never a similarly named coin's logo.
+const CRYPTO_SIMPLEICONS:Record<string,{slug:string;color:string}>={
+  NEAR:{slug:'near',color:'29A9A0'},
+  SUI:{slug:'sui',color:'4DA2FF'},
+  OP:{slug:'optimism',color:'FF0420'},
+  HBAR:{slug:'hedera',color:'8A6FF0'},
 };
 /** The official Simple Icons mark recolored to the issuer's primary brand hue.
  * Unverified, ambiguous and ETF symbols retain the neutral vector fallback. */
@@ -271,7 +279,11 @@ const BRAND_ICON_SLUGS: Record<string,string> = {
 export function curatedAssetLogoUrl(symbol:string, sector:MarketSectorId):string|null {
   const clean = cleanBaseSymbol(symbol);
   if (sector === 'crypto' && CRYPTO_ICON_SLUGS[clean]) {
-    return `https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@0.18.1/svg/color/${CRYPTO_ICON_SLUGS[clean]}.svg`;
+    return `https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@v0.18.1/svg/color/${CRYPTO_ICON_SLUGS[clean]}.svg`;
+  }
+  if (sector === 'crypto' && CRYPTO_SIMPLEICONS[clean]) {
+    const icon=CRYPTO_SIMPLEICONS[clean];
+    return 'https://cdn.simpleicons.org/'+icon.slug+'/'+icon.color;
   }
   if (sector === 'stocks' && BRAND_ICON_SLUGS[clean]) {
     return `https://cdn.simpleicons.org/${BRAND_ICON_SLUGS[clean]}/${BRAND_ICON_COLORS[clean]||'000000'}`;
