@@ -125,12 +125,12 @@ export function parseWsMarketMessage(raw: unknown): ParsedWsMarketFrame[] {
         size,
         trade: {
           id: String(t.id || `${marketId}-${t.time || Date.now()}-${price}-${size}`),
-          maker_side: String(t.maker_side || t.side || 'buy'),
+          maker_side: String(t.maker_side ?? t.side ?? ''),
           price: String(t.price),
           size: String(t.size),
-          time: String(t.time || Date.now()),
-          block_number: String(t.block_number || ''),
-          log_index: String(t.log_index || ''),
+          time: String(t.time ?? t.block_timestamp ?? msg.block_timestamp ?? msg.worker_timestamp ?? msg.timestamp ?? `${Date.now()}000000`),
+          block_number: String(t.block_number ?? msg.block_number ?? ''),
+          log_index: String(t.log_index ?? msg.log_index ?? ''),
           market_id: marketId,
         },
       });
@@ -228,7 +228,6 @@ export function applyMarketPricePatch<T extends RisexMarket>(
     markPrice?: number;
     indexPrice?: number;
     lastPrice?: number;
-    tradeVolumeUsd?: number;
     fundingRate?: number;
     fundingRate8h?: number;
   }
@@ -250,21 +249,9 @@ export function applyMarketPricePatch<T extends RisexMarket>(
   const nextChange24h =
     open24h > 0 && effectivePrice > 0 ? String(effectivePrice - open24h) : market.change_24h;
 
-  const prevHigh = toFinite(market.high_24h);
-  const prevLow = toFinite(market.low_24h);
-  const nextHigh =
-    effectivePrice > 0 && (prevHigh <= 0 || effectivePrice > prevHigh)
-      ? String(effectivePrice)
-      : market.high_24h;
-  const nextLow =
-    effectivePrice > 0 && (prevLow <= 0 || effectivePrice < prevLow)
-      ? String(effectivePrice)
-      : market.low_24h;
-
-  const nextVolume =
-    opts.tradeVolumeUsd && Number.isFinite(opts.tradeVolumeUsd) && opts.tradeVolumeUsd > 0
-      ? String(toFinite(market.quote_volume_24h) + opts.tradeVolumeUsd)
-      : market.quote_volume_24h;
+  // The official 24h high/low and rolling quote volume must come from RISEx REST.
+  // Oracle mark ticks and matched trade notional do not safely reconstruct those
+  // rolling aggregates (and adding trades to a refreshed total double-counts).
 
   const nextFunding =
     opts.fundingRate !== undefined && Number.isFinite(opts.fundingRate)
@@ -283,9 +270,6 @@ export function applyMarketPricePatch<T extends RisexMarket>(
       ? String(opts.indexPrice) : market.index_price,
     last_price: nextLast > 0 ? String(nextLast) : market.last_price,
     change_24h: nextChange24h,
-    high_24h: nextHigh,
-    low_24h: nextLow,
-    quote_volume_24h: nextVolume,
     current_funding_rate: nextFunding,
     funding_rate_8h: nextFunding8h,
   };
@@ -310,7 +294,6 @@ export function applyWsBatchToMarkets<T extends RisexMarket>(
       markPrice?: number;
       indexPrice?: number;
       lastPrice?: number;
-      tradeVolumeUsd: number;
       fundingRate?: number;
       fundingRate8h?: number;
     }
@@ -321,28 +304,22 @@ export function applyWsBatchToMarkets<T extends RisexMarket>(
     marketNameById.set(String(m.market_id), m.display_name || `MKT-${m.market_id}`);
   }
 
-  // The oracle is the authoritative mark/index source even if a trade or orderbook
-  // frame is seen later in the same render batch.
-  const oracleIds = new Set(frames.filter((f) => f.kind === 'oracle').map((f) => f.marketId));
-
   for (const frame of frames) {
     const id = frame.marketId;
     if (!marketNameById.has(id)) continue;
 
-    const cur = patches.get(id) || { tradeVolumeUsd: 0 };
+    const cur = patches.get(id) || {};
     if (frame.kind === 'trade') {
       cur.lastPrice = frame.price;
-      if (!oracleIds.has(id)) cur.markPrice = frame.price;
-      cur.tradeVolumeUsd += frame.price * frame.size;
+      // A trade price is last execution, not the oracle mark price.
+      // Keep these separate, including batches without an oracle frame.
       newTrades.push({
         ...frame.trade,
         market_name: marketNameById.get(id),
       });
     } else if (frame.kind === 'orderbook') {
-      const mid = updateOrderbookAndGetMid(bookCache, frame);
-      if (mid !== null && !oracleIds.has(id)) {
-        cur.markPrice = mid;
-      }
+      // The orderbook midpoint is also not the official RISEx mark price.
+      updateOrderbookAndGetMid(bookCache, frame);
     } else if (frame.kind === 'oracle') {
       if (frame.markPrice !== undefined) cur.markPrice = frame.markPrice;
       if (frame.indexPrice !== undefined) cur.indexPrice = frame.indexPrice;
@@ -367,7 +344,6 @@ export function applyWsBatchToMarkets<T extends RisexMarket>(
       patch.markPrice === undefined &&
       patch.indexPrice === undefined &&
       patch.lastPrice === undefined &&
-      patch.tradeVolumeUsd === 0 &&
       patch.fundingRate === undefined
     ) {
       return m;
@@ -381,4 +357,26 @@ export function applyWsBatchToMarkets<T extends RisexMarket>(
     trades: newTrades,
     changed: anyChanged,
   };
+}
+
+/** Timestamped oracle overlay to prevent old REST snapshots from visibly
+ * reversing a newer WS mark/index quote. Never carry a quote forever. */
+export interface TimedOracleQuote {
+  receivedAt: number;
+  markPrice?: number;
+  indexPrice?: number;
+}
+
+export function mergeSnapshotWithRecentOracle<T extends RisexMarket>(
+  snapshot: T[],
+  oracleQuotes: ReadonlyMap<string, TimedOracleQuote>,
+  now = Date.now(),
+  freshnessMs = 20_000
+): T[] {
+  return snapshot.map((market) => {
+    const quote = oracleQuotes.get(String(market.market_id));
+    if (!quote || quote.receivedAt > now || now - quote.receivedAt > freshnessMs) return market;
+    if (quote.markPrice === undefined && quote.indexPrice === undefined) return market;
+    return applyMarketPricePatch(market, { markPrice: quote.markPrice, indexPrice: quote.indexPrice });
+  });
 }
