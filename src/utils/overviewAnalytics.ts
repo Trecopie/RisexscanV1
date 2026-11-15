@@ -189,9 +189,6 @@ export function buildMarketSectors(markets: RisexMarket[]): {
 
   let totalVolume24h = 0;
   let totalOpenInterestUsd = 0;
-  let advancers = 0;
-  let decliners = 0;
-  let unchanged = 0;
 
   for (const m of markets) {
     if (m.active === false) continue;
@@ -423,6 +420,9 @@ export function buildMarketDashboard(
   const entries: MarketDashboardEntry[] = [];
   let totalVolume24h = 0;
   let totalOpenInterestUsd = 0;
+  let advancers = 0;
+  let decliners = 0;
+  let unchanged = 0;
 
   for (const m of markets) {
     if (m.active === false) continue;
