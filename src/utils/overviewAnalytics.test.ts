@@ -219,6 +219,10 @@ test('buildMarketDashboard filters by sector and ranks volume, gainers, and lose
 
   const all = buildMarketDashboard(markets, 'all', 6);
   assert.equal(all.marketCount, 4);
+  assert.equal(all.advancers, 2);
+  assert.equal(all.decliners, 2);
+  assert.equal(all.unchanged, 0);
+  assert.equal(all.advancersPct, 50);
   assert.equal(all.totalVolume24h, 1700000);
   assert.equal(all.topVolume[0].symbol, 'ETH');
   assert.equal(all.gainers[0].symbol, 'NVDA');
@@ -254,6 +258,8 @@ test('gainer/loser ranking never labels a rising ticker a loser or a falling tic
   ]);
   assert.equal(allGreen.losers.length,0);
   assert.equal(allGreen.gainers.length,2);
+  assert.equal(allGreen.advancers,2);
+  assert.equal(allGreen.decliners,0);
   const allRed=buildMarketDashboard([
     mkMarket({market_id:'1',change_24h:'-10',mark_price:'90'}),
     mkMarket({market_id:'2',change_24h:'-1',mark_price:'99'}),
