@@ -323,8 +323,8 @@ export const MarketsPage: React.FC<{
           </table>
         </div>
       </div>
-    </div>
       </>
       )
+    </div>
   );
 };
