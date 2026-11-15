@@ -867,6 +867,45 @@ async function discoverAllTraders() {
   return priorityQueue;
 }
 
+// Persist an up-to-date sample independently of large discovery/enrichment cycles.
+// Observations update the current UTC hour bucket; distinct hours remain comparable.
+let cohortCaptureInProgress = false;
+const COHORT_CAPTURE_INTERVAL_MS = 5 * 60_000;
+async function captureCohortSnapshot():Promise<void> {
+  if(!historyStore.ready || cohortCaptureInProgress ||
+     Date.now()-lastPositionHistorySample < COHORT_CAPTURE_INTERVAL_MS)return;
+  cohortCaptureInProgress=true;
+  const capturedAt=Date.now();
+  try {
+    const grouped=new Map<string,{
+      marketId:string;cohort:'whale'|'shark'|'dolphin'|'fish'|'shrimp';
+      observedAt:number;longUsd:number;shortUsd:number;positions:number
+    }>();
+    for(const trader of tradersMap.values()){
+      if(!trader.portfolioEnriched)continue;
+      const cohort=classifyTraderCohort(trader.accountValue,trader.totalNotional);
+      for(const pos of trader.positions){
+        const key=`${pos.marketId}:${cohort}`;
+        const row=grouped.get(key)||{
+          marketId:pos.marketId,cohort,observedAt:capturedAt,
+          longUsd:0,shortUsd:0,positions:0,
+        };
+        if(pos.side==='LONG')row.longUsd+=pos.notionalUsd;
+        else row.shortUsd+=pos.notionalUsd;
+        row.positions++;
+        grouped.set(key,row);
+      }
+    }
+    if(grouped.size===0)return;
+    await historyStore.recordCohortSnapshots([...grouped.values()]);
+    lastPositionHistorySample=capturedAt;
+  }catch(err){
+    console.error('Cohort snapshot persistence warning:',err);
+  }finally{
+    cohortCaptureInProgress=false;
+  }
+}
+
 async function runBackgroundIndexer() {
   if (isIndexing) return;
   isIndexing = true;
@@ -880,8 +919,10 @@ async function runBackgroundIndexer() {
     const queue = selectIndexerQueue(priorityList, tradersMap, now, PRIORITY_FRESH_MS, 360, 220);
     const BATCH_SIZE = 4;
     for (let i = 0; i < queue.length; i += BATCH_SIZE) {
-      while (activeInteractiveRequests > 0) {
-        await new Promise((r) => setTimeout(r, 800));
+      // Give interactive requests first priority without starving backfill indefinitely.
+      // A bounded pause prevents a constantly busy public site from stopping indexing.
+      for(let pause=0;pause<6 && activeInteractiveRequests>0;pause++){
+        await new Promise((r)=>setTimeout(r,500));
       }
       const batch = queue.slice(i, i + BATCH_SIZE);
       await Promise.allSettled(batch.map((addr) => enrichWallet(addr, 'indexer')));
@@ -891,31 +932,7 @@ async function runBackgroundIndexer() {
     }
 
     lastIndexComplete = Date.now();
-    if (historyStore.ready && Date.now() - lastPositionHistorySample > 3_600_000) {
-      lastPositionHistorySample = Date.now();
-      const grouped=new Map<string,{
-        marketId:string;cohort:'whale'|'shark'|'dolphin'|'fish'|'shrimp';
-        observedAt:number;longUsd:number;shortUsd:number;positions:number
-      }>();
-      for (const trader of tradersMap.values()) {
-        if (!trader.portfolioEnriched) continue;
-        const cohort=classifyTraderCohort(trader.accountValue,trader.totalNotional);
-        for (const pos of trader.positions) {
-          const key=`${pos.marketId}:${cohort}`;
-          const record=grouped.get(key)||{
-            marketId:pos.marketId,cohort,observedAt:Date.now(),longUsd:0,shortUsd:0,positions:0,
-          };
-          if(pos.side==='LONG') record.longUsd+=pos.notionalUsd;
-          else record.shortUsd+=pos.notionalUsd;
-          record.positions++;
-          grouped.set(key,record);
-        }
-      }
-      await historyStore.recordCohortSnapshots([...grouped.values()]).catch(err=>{
-        lastPositionHistorySample=0;
-        console.error('Position snapshot persistence warning:',err);
-      });
-    }
+    await captureCohortSnapshot();
     saveDiskCache();
   } catch (err) {
     console.error('Indexer cycle warning:', err);
@@ -1428,6 +1445,8 @@ async function startServer() {
     });
   });
 
+  void captureCohortSnapshot();
+  setInterval(() => { void captureCohortSnapshot(); }, COHORT_CAPTURE_INTERVAL_MS);
   runBackgroundIndexer();
   setInterval(() => {
     runBackgroundIndexer();

@@ -371,13 +371,6 @@ export const CohortsPage: React.FC<{
         </div>
       ) : null}
 
-      <SmartMoneyChanges
-        marketNames={Object.fromEntries((data?.marketCohorts||[]).map(m=>[m.marketId,m.displayName]))}
-        onSelectMarket={onSelectMarket}
-      />
-
-      <FundingRiskWatchlist onSelectMarket={onSelectMarket} />
-
       {/* VIEW 1: Size Cohorts + Performance Cohorts */}
       {data && subView === 'bias' && (
         <div className="space-y-5">
@@ -480,7 +473,7 @@ export const CohortsPage: React.FC<{
                 Performance Cohorts (Smart Money vs. Underwater)
               </h2>
               <span className="font-mono text-[11px] text-slate-400">
-                All-time PnL cohorts &amp; current directional tilt
+                Indexed portfolio PnL cohorts &amp; current directional tilt
               </span>
             </div>
             <div className="grid grid-cols-1 divide-y divide-slate-800/70 sm:grid-cols-2 sm:divide-y-0 sm:divide-x lg:grid-cols-4">
@@ -518,6 +511,13 @@ export const CohortsPage: React.FC<{
               ))}
             </div>
           </div>
+          {/* Preserve the original cohort overview as the primary experience.
+              Supplemental time-series and watchlist come after the classic tables. */}
+          <SmartMoneyChanges
+            marketNames={Object.fromEntries((data.marketCohorts||[]).map(m=>[m.marketId,m.displayName]))}
+            onSelectMarket={onSelectMarket}
+          />
+          <FundingRiskWatchlist onSelectMarket={onSelectMarket} />
         </div>
       )}
 
