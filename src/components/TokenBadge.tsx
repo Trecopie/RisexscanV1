@@ -246,10 +246,14 @@ function renderVectorMark(clean: string, sector: MarketSectorId, theme: AssetThe
  * The original vector remains the always-available fallback for unknown assets,
  * aliases, CDN failures or assets without a reliable icon. */
 const CRYPTO_ICON_SLUGS: Record<string,string> = {
-  BTC:'btc',ETH:'eth',SOL:'sol',BNB:'bnb',XRP:'xrp',ADA:'ada',DOGE:'doge',
-  AVAX:'avax',DOT:'dot',LTC:'ltc',LINK:'link',ATOM:'atom',UNI:'uni',
-  AAVE:'aave',XLM:'xlm',BCH:'bch',XMR:'xmr',ZEC:'zec',
-  FIL:'fil',TRX:'trx',ETC:'etc',EOS:'eos',
+  BTC:'btc', ETH:'eth', SOL:'sol', BNB:'bnb', XRP:'xrp', ADA:'ada',
+  DOGE:'doge', AVAX:'avax', DOT:'dot', LTC:'ltc', LINK:'link',
+  ATOM:'atom', UNI:'uni', AAVE:'aave', XLM:'xlm', BCH:'bch',
+  XMR:'xmr', ZEC:'zec', FIL:'fil', TRX:'trx', ETC:'etc', EOS:'eos',
+  ALGO:'algo', XTZ:'xtz', MATIC:'matic', MKR:'mkr',
+  SHIB:'shib', COMP:'comp', CRV:'crv', DASH:'dash', ZRX:'zrx',
+  NEAR:'near', ICP:'icp', HBAR:'hbar', INJ:'inj', OP:'op', ARB:'arb',
+  APT:'apt', SUI:'sui', PEPE:'pepe', SEI:'sei',
 };
 /** The official Simple Icons mark recolored to the issuer's primary brand hue.
  * Unverified, ambiguous and ETF symbols retain the neutral vector fallback. */
@@ -267,7 +271,7 @@ const BRAND_ICON_SLUGS: Record<string,string> = {
 export function curatedAssetLogoUrl(symbol:string, sector:MarketSectorId):string|null {
   const clean = cleanBaseSymbol(symbol);
   if (sector === 'crypto' && CRYPTO_ICON_SLUGS[clean]) {
-    return `https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/svg/color/${CRYPTO_ICON_SLUGS[clean]}.svg`;
+    return `https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@0.18.1/svg/color/${CRYPTO_ICON_SLUGS[clean]}.svg`;
   }
   if (sector === 'stocks' && BRAND_ICON_SLUGS[clean]) {
     return `https://cdn.simpleicons.org/${BRAND_ICON_SLUGS[clean]}/${BRAND_ICON_COLORS[clean]||'000000'}`;
