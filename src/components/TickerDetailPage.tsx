@@ -34,6 +34,8 @@ import { TradingViewChart } from './TradingViewChart';
 import { LiquidityDepthHeatmap } from './LiquidityDepthHeatmap';
 import { useMarketStream } from '../context/MarketWebSocketContext';
 import { parseWsMarketMessage, updateOrderbookAndGetMid, type OrderbookCache } from '../utils/marketWsPatch';
+import { applyRawBookFrame, emptyRawBook, rawBookIntegrityOk, readRawOrderbookFrame } from '../utils/orderbookIntegrity';
+import { mergeExplorerTradeTape } from '../utils/explorerLive';
 import { calcLiqDistancePct, LiqDistanceBadge, TokenBadge, TraderAvatar } from './TraderAvatar';
 
 interface TickerAnalyticsResponse {
@@ -75,6 +77,10 @@ export const TickerDetailPage: React.FC<{
   const [fundingHistory, setFundingHistory] = useState<FundingRateRecord[]>([]);
   const [bookTab, setBookTab] = useState<'book' | 'trades'>('book');
   const [bookIsLive, setBookIsLive] = useState(false);
+  const [bookResyncs, setBookResyncs] = useState(0);
+  const [bookUpdatedAt, setBookUpdatedAt] = useState<number | null>(null);
+  const [lastTradeReceivedAt, setLastTradeReceivedAt] = useState<number | null>(null);
+  const [depthRows, setDepthRows] = useState(10);
   const bookLiveRef = React.useRef(false);
   const [loading, setLoading] = useState(true);
 
@@ -117,7 +123,9 @@ export const TickerDetailPage: React.FC<{
       if (obRes.status === 'fulfilled' && obRes.value && !obRes.value.error && !bookLiveRef.current) {
         setOrderbook({ bids: obRes.value.bids || [], asks: obRes.value.asks || [] });
       }
-      if (trRes.status === 'fulfilled' && trRes.value?.trades) setTrades(trRes.value.trades);
+      if (trRes.status === 'fulfilled' && trRes.value?.trades) {
+        setTrades((existing) => mergeExplorerTradeTape(existing, trRes.value.trades, 80));
+      }
       if (fnRes.status === 'fulfilled' && fnRes.value?.records) setFundingHistory(fnRes.value.records);
     } catch {
       // ignore
@@ -165,6 +173,7 @@ export const TickerDetailPage: React.FC<{
     let attempt = 0;
     let disposed = false;
     const bookCache: OrderbookCache = new Map();
+    const rawBook = emptyRawBook();
     let receivedBookSnapshot = false;
     bookLiveRef.current = false;
     setBookIsLive(false);
@@ -181,6 +190,7 @@ export const TickerDetailPage: React.FC<{
       bookLiveRef.current = true;
       setBookIsLive(true);
       setOrderbook({ bids, asks });
+      setBookUpdatedAt(Date.now());
     };
 
     const connect = () => {
@@ -200,14 +210,33 @@ export const TickerDetailPage: React.FC<{
             // Share the same validated RISEx WS decoder as the market-wide feed.
             // RISEx sends market ID, block and timestamp in the message envelope,
             // not necessarily inside its trade data object.
-            const frames = parseWsMarketMessage(JSON.parse(String(ev.data)));
+            const message = JSON.parse(String(ev.data));
+            const frames = parseWsMarketMessage(message);
+            const exactBookFrame = readRawOrderbookFrame(message);
             for (const frame of frames) {
               if (frame.kind !== 'orderbook' || frame.marketId !== String(marketId)) continue;
               // A delta without a full initial book cannot be displayed as a
               // complete L2 snapshot, even if it updates both sides.
               if (!receivedBookSnapshot && !frame.isSnapshot) continue;
               if (frame.isSnapshot) receivedBookSnapshot = true;
+              // Validate raw wei strings, not rounded JavaScript number price keys.
+              if (!exactBookFrame || exactBookFrame.marketId !== String(marketId)) continue;
+              applyRawBookFrame(rawBook, exactBookFrame);
               updateOrderbookAndGetMid(bookCache, frame);
+              if (!rawBookIntegrityOk(rawBook, exactBookFrame)) {
+                receivedBookSnapshot = false;
+                bookCache.clear();
+                rawBook.bids.clear();
+                rawBook.asks.clear();
+                if (bookUpdateTimer) { clearTimeout(bookUpdateTimer); bookUpdateTimer = null; }
+                bookLiveRef.current = false;
+                setBookIsLive(false);
+                setBookResyncs((count) => count + 1);
+                // RISEx specifies unsubscribe -> subscribe after a checksum mismatch.
+                socket.send(JSON.stringify({method:'unsubscribe',params:{channel:'orderbook',market_ids:[Number(marketId)]}}));
+                socket.send(JSON.stringify({method:'subscribe',params:{channel:'orderbook',market_ids:[Number(marketId)]}}));
+                continue;
+              }
               if (!bookUpdateTimer) bookUpdateTimer = setTimeout(flushBook, 120);
             }
             const fresh: MarketTrade[] = frames
@@ -215,10 +244,8 @@ export const TickerDetailPage: React.FC<{
               .map((frame) => frame.kind === 'trade' ? frame.trade : null)
               .filter((trade): trade is MarketTrade => trade !== null);
             if (fresh.length > 0) {
-              setTrades((prev) => {
-                const seen = new Set(prev.map((x) => x.id));
-                return [...fresh.filter((x) => !seen.has(x.id)), ...prev].slice(0, 60);
-              });
+              setLastTradeReceivedAt(Date.now());
+              setTrades((prev) => mergeExplorerTradeTape(fresh, prev, 80));
               setCandles((prev) => {
                 if (prev.length === 0) return prev;
                 let bars = normalizeCandles(prev);
@@ -252,6 +279,8 @@ export const TickerDetailPage: React.FC<{
           ws = null;
           receivedBookSnapshot = false;
           bookCache.clear();
+          rawBook.bids.clear();
+          rawBook.asks.clear();
           if (bookUpdateTimer) { clearTimeout(bookUpdateTimer); bookUpdateTimer = null; }
           bookLiveRef.current = false;
           if (disposed) return;
@@ -351,8 +380,11 @@ export const TickerDetailPage: React.FC<{
   const funding1hPct = Number(market?.current_funding_rate || 0) * 100;
   const fundingApr = funding1hPct * 24 * 365;
 
-  const topAsks = useMemo(() => [...orderbook.asks].slice(0, 10).reverse(), [orderbook.asks]);
-  const topBids = useMemo(() => [...orderbook.bids].slice(0, 10), [orderbook.bids]);
+  const topAsks = useMemo(() => [...orderbook.asks].slice(0, depthRows).reverse(), [orderbook.asks, depthRows]);
+  const topBids = useMemo(() => [...orderbook.bids].slice(0, depthRows), [orderbook.bids, depthRows]);
+  const bestBid = Number(orderbook.bids[0]?.price || 0);
+  const bestAsk = Number(orderbook.asks[0]?.price || 0);
+  const spread = bestBid > 0 && bestAsk > bestBid ? bestAsk - bestBid : null;
   const maxBookSize = useMemo(
     () =>
       Math.max(
@@ -487,7 +519,7 @@ export const TickerDetailPage: React.FC<{
                 bookTab === 'book' ? 'bg-[#131c31] text-[#ffb02e]' : 'text-slate-400'
               }`}
             >
-              L2 Orderbook {bookIsLive && <span className="ml-1 text-[#22e0a1]" title="Live orderbook stream">●</span>}
+              L2 Orderbook <span className={bookIsLive ? 'text-[#22e0a1]' : 'text-[#ffb02e]'} title={bookIsLive ? 'Checksummed WebSocket L2' : 'REST fallback / reconnecting'}>●</span>
             </button>
             <button
               type="button"
@@ -502,6 +534,24 @@ export const TickerDetailPage: React.FC<{
 
           {bookTab === 'book' ? (
             <div className="flex-1 flex flex-col justify-between text-xs font-mono tabular-nums">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400">
+                <span className={bookIsLive ? 'text-[#22e0a1]' : 'text-[#ffb02e]'}>
+                  {bookIsLive ? '● Checksummed WS L2' : '○ REST snapshot / reconnecting'}
+                </span>
+                <select
+                  value={depthRows}
+                  onChange={(e) => setDepthRows(Number(e.target.value))}
+                  className="rounded border border-slate-700 bg-[#090e1a] px-1 py-0.5 text-slate-300"
+                  aria-label="Visible order book levels"
+                >
+                  {[10, 20, 30, 50].map((count) => <option key={count} value={count}>{count} levels</option>)}
+                </select>
+              </div>
+              {bookResyncs > 0 && <div className="mb-1 text-[10px] text-[#ffb02e]">L2 checksum mismatch recovery: {bookResyncs} resync{bookResyncs === 1 ? '' : 's'}</div>}
+              {spread !== null && <div className="mb-1 flex justify-between text-[10px] text-slate-400">
+                <span>Spread {formatPrice(spread)}</span>
+                <span>{(spread / ((bestAsk + bestBid) / 2) * 10_000).toFixed(2)} bps</span>
+              </div>
               <div className="mb-1 flex justify-between text-[10px] uppercase text-slate-500">
                 <span>Price</span>
                 <span>Size ({market?.base_asset_symbol})</span>
