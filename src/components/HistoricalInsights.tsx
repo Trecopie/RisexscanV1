@@ -1,7 +1,7 @@
 import React,{useEffect,useMemo,useState} from 'react';
 import {formatUsd} from '../utils/format';
 
-type Period='14D'|'30D'|'90D'|'ALL';
+type Period='24H'|'7D'|'30D'|'90D'|'ALL';
 type Point={time:number;value:number};
 interface History {
   coverage:{source:string;completeHistory:false;databaseConnected:boolean;
@@ -12,9 +12,15 @@ interface History {
   dailyTrades:Array<{day:number;volumeUsd:number;reportedFeesUsd:number|null;feeEventCount:number;tradeCount:number}>;
   hourlyFees:Array<{time:number;reportedFeesUsd:number;feeEventCount:number}>;
   oiSnapshots:Array<{time:number;openInterestUsd:number;volume24hUsd:number;marketCount:number}>;
+  marketCandles?:{
+    daily:Array<{time:number;value:number;marketCount:number}>;
+    firstDay:number|null;lastDay:number|null;latestFetchedAt:number|null;
+    distinctMarkets:number;completeHistory:false;source:string;
+  };
+  defillamaOi?:{source:string;completeHistory:false;points:Point[]};
 }
-const PERIODS:Period[]=['14D','30D','90D','ALL'];
-const PERIOD_DAYS:Record<Exclude<Period,'ALL'>,number>={'14D':14,'30D':30,'90D':90};
+const PERIODS:Period[]=['24H','7D','30D','90D','ALL'];
+const PERIOD_DAYS:Record<Exclude<Period,'ALL'>,number>={'24H':1,'7D':7,'30D':30,'90D':90};
 const shortTime=(ms:number,withHour:boolean)=>{
   const d=new Date(ms);
   return withHour?d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):
@@ -25,7 +31,9 @@ const ChartCard:React.FC<{title:string;source:string;color:string;points:Point[]
   const pretty=(value:number)=>unit==='count'?Math.max(0,Math.round(value)).toLocaleString():formatUsd(value,true);
   // Cumulative values are calculated over the entire observed history first;
   // filtering only trims the viewport and never resets the running total.
-  const cutoff=period==='ALL'?Number.NEGATIVE_INFINITY:Date.now()-PERIOD_DAYS[period]*86400000;
+  const cutoff=period==='ALL'?Number.NEGATIVE_INFINITY:period==='24H'?
+    (points.at(-1)?.time??Date.now())-86_400_000:
+    Date.now()-PERIOD_DAYS[period]*86_400_000;
   const values=points.filter(p=>Number.isFinite(p.time)&&Number.isFinite(p.value)&&p.time>=cutoff)
     .sort((a,b)=>a.time-b.time);
   const first=values[0],last=values.at(-1),n=values.length;
@@ -108,11 +116,25 @@ export const HistoricalInsights:React.FC=()=>{
     const cumulativeFees:Point[]=[];
     for(const h of history?.hourlyFees??[]){fees+=h.reportedFeesUsd;
       cumulativeFees.push({time:h.time,value:fees});}
+    const candleRecords=(history?.marketCandles?.daily??[])
+      .filter(p=>Number.isFinite(p.time)&&Number.isFinite(p.value)&&p.value>=0)
+      .sort((a,b)=>a.time-b.time);
+    const oiFromDefiLlama=(history?.defillamaOi?.points??[])
+      .filter(p=>Number.isFinite(p.time)&&Number.isFinite(p.value)&&p.value>=0)
+      .sort((a,b)=>a.time-b.time);
+    let derivedTotal=0;
+    const reconstructedCumulative=candleRecords.map(p=>{
+      derivedTotal+=p.value;return {time:p.time,value:derivedTotal};
+    });
     return {
-      oi:(history?.oiSnapshots??[]).map(d=>({time:d.time,value:d.openInterestUsd})),
-      daily:daily.map(d=>({time:d.day,value:d.volumeUsd})),
+      hasCandleHistory:candleRecords.length>0,
+      hasOiHistory:oiFromDefiLlama.length>0,
+      oi:oiFromDefiLlama.length?oiFromDefiLlama:
+        (history?.oiSnapshots??[]).map(d=>({time:d.time,value:d.openInterestUsd})),
+      daily:candleRecords.length?candleRecords:daily.map(d=>({time:d.day,value:d.volumeUsd})),
       dailyTrades:daily.map(d=>({time:d.day,value:d.tradeCount})),
-      cumulativeVolume,cumulativeFees
+      cumulativeVolume:candleRecords.length?reconstructedCumulative:cumulativeVolume,
+      cumulativeFees
     };
   },[history]);
 
@@ -120,7 +142,7 @@ export const HistoricalInsights:React.FC=()=>{
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h2 className="font-display text-lg font-bold text-[#e8edfb]">Historical Market Analytics</h2>
-        <p className="mt-1 text-xs text-slate-400">Recorded RISEx history · protocol TVL is displayed below</p>
+        <p className="mt-1 text-xs text-slate-400">Public RISEx OHLCV + DefiLlama OI, with separately labeled observed trades</p>
       </div>
       <div className="flex items-center gap-2">
         <div role="group" aria-label="History time range" className="flex rounded-lg border border-slate-800 bg-[#070b14] p-0.5">
@@ -132,7 +154,8 @@ export const HistoricalInsights:React.FC=()=>{
         <details className="relative">
           <summary className="cursor-pointer list-none rounded-md border border-slate-800 px-2 py-1.5 text-[11px] text-slate-400 hover:text-white">Sources ⓘ</summary>
           <div className="absolute right-0 top-full z-20 mt-2 w-72 rounded-xl border border-slate-700 bg-[#101727] p-3 text-[11px] leading-relaxed text-slate-300 shadow-xl sm:w-96">
-            <p><strong>RISEx OI:</strong> hourly sum of public REST market OI × mark; exchange counting convention has not been reconciled against DefiLlama.</p>
+            <p><strong>Historical OI:</strong> DefiLlama venue observations where available; otherwise hourly RISEx snapshots. They are not TVL.</p>
+            <p className="mt-1"><strong>Daily/cumulative volume:</strong> archived public RISEx 1D candles, only for markets whose volume units passed a comparison against RISEx 24h USD volume. USD estimates exclude unsupported and delisted markets; not an independently certified venue lifetime total.</p>
             <p className="mt-1"><strong>Observed volume/fees:</strong> deduplicated public trades saved since collection began. Not complete venue-wide lifetime totals.</p>
             <p className="mt-1"><strong>TVL:</strong> The single, full-range DefiLlama chart appears in the Protocol TVL section below.</p>
             <a href="https://defillama.com/protocol/risex" target="_blank" rel="noopener noreferrer"
@@ -142,12 +165,23 @@ export const HistoricalInsights:React.FC=()=>{
       </div>
     </div>
     {historyError&&<p className="text-xs text-[#ffb02e]">Latest RISEx history refresh failed; showing previously loaded observations.</p>}
+    {charts.hasCandleHistory&&<p className="rounded-lg border border-[#46a6ff]/25 bg-[#46a6ff]/5 px-3 py-2 text-[11px] text-slate-300">
+      <strong className="text-[#46a6ff]">Verified-source reconstruction, partial coverage:</strong>{' '}
+      {history?.marketCandles?.distinctMarkets??0} market IDs, from{' '}
+      {history?.marketCandles?.firstDay?shortTime(history.marketCandles.firstDay,false):'unknown'} through{' '}
+      {history?.marketCandles?.lastDay?shortTime(history.marketCandles.lastDay,false):'unknown'}.
+      Missing/de-listed markets and unverified volume units are excluded; ALL means all available verified observations, not protocol inception completeness.
+      {period==='24H'?' 24H displays the latest recorded UTC-day observation, not synthetic intraday data.':''}
+    </p>}
     <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-      <ChartCard title="Open Interest History" source="RISEx · Hourly OI samples"
+      <ChartCard title="Open Interest History"
+        source={charts.hasOiHistory?'DefiLlama · Historical RISEx OI':'RISEx · Hourly OI samples (partial)'}
         color="#ffb02e" points={charts.oi} period={period}/>
-      <ChartCard title="Observed Daily Volume" source="RISEx · Recorded trades only"
+      <ChartCard title={charts.hasCandleHistory?'Historical Daily Volume':'Observed Daily Volume'}
+        source={charts.hasCandleHistory?'RISEx · Calibrated 1D OHLCV USD estimate':'RISEx · Recorded trades only'}
         color="#22e0a1" points={charts.daily} period={period}/>
-      <ChartCard title="Cumulative Observed Volume" source="RISEx · Incomplete recorded history"
+      <ChartCard title={charts.hasCandleHistory?'Cumulative Reconstructed Volume':'Cumulative Observed Volume'}
+        source={charts.hasCandleHistory?'RISEx · Available validated candles only; not venue lifetime':'RISEx · Incomplete recorded history'}
         color="#46a6ff" points={charts.cumulativeVolume} period={period}/>
     </div>
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
