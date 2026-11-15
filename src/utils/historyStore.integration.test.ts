@@ -45,6 +45,7 @@ test('PostgreSQL round trip: durable traders, state, unique trades, OI and cohor
       assert.equal(history.coverage.databaseConnected,true);
       assert.ok(history.coverage.observedTrades>=1);
       assert.ok(history.dailyTrades.some(day=>day.volumeUsd>=105));
+      assert.ok(history.hourlyFees.some(point=>point.reportedFeesUsd>=0.45 && point.feeEventCount>=1));
       assert.ok(history.oiSnapshots.some(s=>s.marketCount>=1 && s.openInterestUsd>=222));
 
       // A single bucket must expose present exposure, not a fabricated zero-based change.
