@@ -303,8 +303,8 @@ export const WalletPage: React.FC<{
         av = a.realizedPnl;
         bv = b.realizedPnl;
       } else if (rzSortBy === 'size') {
-        av = a.size * (a.exitPrice || a.entryPrice || 0);
-        bv = b.size * (b.exitPrice || b.entryPrice || 0);
+        av = rzViewMode === 'market' ? a.size : a.size * (a.exitPrice || a.entryPrice || 0);
+        bv = rzViewMode === 'market' ? b.size : b.size * (b.exitPrice || b.entryPrice || 0);
       } else if (rzSortBy === 'funding') {
         av = a.funding;
         bv = b.funding;
@@ -315,7 +315,7 @@ export const WalletPage: React.FC<{
       return rzSortDesc ? bv - av : av - bv;
     });
     return list;
-  }, [displayedRealized, rzSortBy, rzSortDesc]);
+  }, [displayedRealized, rzViewMode, rzSortBy, rzSortDesc]);
 
   const toggleRzSort = (key: RealizedSortKey) => {
     if (rzSortBy === key) setRzSortDesc((d) => !d);
@@ -1027,7 +1027,7 @@ export const WalletPage: React.FC<{
                     <option value="pnl:asc">Sort: Realized PnL (Lowest First)</option>
                     <option value="time:desc">Sort: Latest Closed</option>
                     <option value="time:asc">Sort: Oldest Closed</option>
-                    <option value="size:desc">Sort: Largest Position</option>
+                    <option value="size:desc">Sort: {rzViewMode === 'market' ? 'Largest Realized Size' : 'Largest Position'}</option>
                     <option value="funding:desc">Sort: Funding Received</option>
                   </select>
                 </div>
@@ -1154,8 +1154,8 @@ export const WalletPage: React.FC<{
                             Size <ArrowDownUp className="h-3 w-3" />
                           </span>
                         </th>
-                        <th className="py-3 px-2 text-right">Entry</th>
-                        <th className="py-3 px-2 text-right">Exit</th>
+                        <th className="py-3 px-2 text-right">{rzViewMode === 'market' ? 'Entry (N/A)' : 'Entry'}</th>
+                        <th className="py-3 px-2 text-right">{rzViewMode === 'market' ? 'Exit (N/A)' : 'Exit'}</th>
                         <th
                           onClick={() => toggleRzSort('funding')}
                           className="cursor-pointer py-3 px-2 text-right hover:text-[#ffb02e]"
