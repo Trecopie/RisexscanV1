@@ -117,7 +117,6 @@ export class HistoryStore {
   async upsertTraders(rows:Array<{address:string}>):Promise<void> {
     if(!this.ready || !this.pool || !rows.length)return;
     for(let start=0;start<rows.length;start+=250){
-      const json=JSON.stringify(rows.slice(start,start+250));
       await this.pool.query(`
         INSERT INTO risexscan_traders(address,payload)
         SELECT lower(record.address),record.value
