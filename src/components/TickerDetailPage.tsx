@@ -528,7 +528,7 @@ export const TickerDetailPage: React.FC<{
                 bookTab === 'trades' ? 'bg-[#131c31] text-[#ffb02e]' : 'text-slate-400'
               }`}
             >
-              Recent Fills ({trades.length})
+              Recent Fills ({trades.length}) {lastTradeReceivedAt && <span title={new Date(lastTradeReceivedAt).toLocaleTimeString()} className="text-[#22e0a1]">●</span>}
             </button>
           </div>
 
@@ -547,11 +547,16 @@ export const TickerDetailPage: React.FC<{
                   {[10, 20, 30, 50].map((count) => <option key={count} value={count}>{count} levels</option>)}
                 </select>
               </div>
+              {bookUpdatedAt !== null && (
+                <div className="mb-1 text-[10px] text-slate-500">
+                  L2 received {new Date(bookUpdatedAt).toLocaleTimeString()} · {bookIsLive ? 'WebSocket' : 'last received snapshot'}
+                </div>
+              )}
               {bookResyncs > 0 && <div className="mb-1 text-[10px] text-[#ffb02e]">L2 checksum mismatch recovery: {bookResyncs} resync{bookResyncs === 1 ? '' : 's'}</div>}
               {spread !== null && <div className="mb-1 flex justify-between text-[10px] text-slate-400">
                 <span>Spread {formatPrice(spread)}</span>
                 <span>{(spread / ((bestAsk + bestBid) / 2) * 10_000).toFixed(2)} bps</span>
-              </div>
+              </div>}
               <div className="mb-1 flex justify-between text-[10px] uppercase text-slate-500">
                 <span>Price</span>
                 <span>Size ({market?.base_asset_symbol})</span>
@@ -596,7 +601,8 @@ export const TickerDetailPage: React.FC<{
           ) : (
             <div className="flex-1 max-h-[480px] overflow-y-auto space-y-1 text-xs font-mono tabular-nums">
               {trades.map((tr, i) => {
-                const isBuy = tr.maker_side?.toLowerCase().includes('buy') || tr.maker_side === '0';
+                // Trade feed reports the maker's side; taker flow is the opposite.
+                const isBuy = tr.maker_side === '1' || tr.maker_side?.toLowerCase() === 'sell';
                 return (
                   <div key={`${tr.id}-${i}`} className="flex items-center justify-between rounded px-2 py-1 hover:bg-[#131c31]/60">
                     <span className={isBuy ? 'text-[#22e0a1]' : 'text-[#ff4d6d]'}>{formatPrice(tr.price)}</span>
