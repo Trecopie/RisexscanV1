@@ -54,8 +54,12 @@ export const SmartMoneyChanges:React.FC<{
     </div>
     {!data?.fromTime||!data?.toTime ? (
       <div className="rounded-lg border border-slate-800 bg-[#080d18] px-4 py-6 text-center text-xs text-slate-400">
-        {error?'Could not load position change history. ':'Waiting for two complete hourly PostgreSQL snapshots. '}
-        Indexed snapshots require the optional persistent history service.
+        {error
+          ? 'Could not load position change history. '
+          : data?.toTime
+            ? `First hourly cohort snapshot recorded ${new Date(data.toTime).toLocaleString()}. Waiting for the next distinct hourly snapshot to compare positions. `
+            : 'No indexed cohort snapshots recorded yet. '}
+        {!data?.toTime && 'Position history needs the persistent database and completed indexer cycles.'}
       </div>
     ):<>
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] font-mono text-slate-500">
