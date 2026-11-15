@@ -66,7 +66,7 @@ export function parseOracleWei(raw: unknown): number | undefined {
 /** RISEx WebSocket L2 price and quantity fields are *both* 18-decimal wei
  * integers. Do not reuse the decimal-string REST/trades decoding path here. */
 function decodeOrderbookWei(raw: unknown): number | null {
-  if (typeof raw !== 'string' || !/^\\d+$/.test(raw)) return null;
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return null;
   const n = Number(raw) / 1e18;
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
