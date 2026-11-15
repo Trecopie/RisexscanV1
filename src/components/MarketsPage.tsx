@@ -3,7 +3,7 @@ import { ArrowDownUp, BarChart3, Search } from 'lucide-react';
 import { useMarketStream } from '../context/MarketWebSocketContext';
 import type { MarketWithStats } from '../utils/marketWsPatch';
 import { calcMarketChangePct, formatPct, formatPrice, formatUsd } from '../utils/format';
-import { MiniSparkline } from './Charts';
+import { MarketMoveMeter } from './Charts';
 import { TokenBadge } from './TraderAvatar';
 import { filterDirectoryMarkets, summarizeDirectoryMarkets } from '../utils/marketDirectory';
 
@@ -236,7 +236,7 @@ export const MarketsPage: React.FC<{
                       </td>
                       <td className="py-3 px-2">
                         <div className="flex justify-center">
-                          <MiniSparkline seed={m.display_name} changePct={chg} width={64} height={22} />
+                          <MarketMoveMeter changePct={chg} width={64} height={22} />
                         </div>
                       </td>
                       <td className="py-3 px-2 text-right font-mono text-slate-200">
