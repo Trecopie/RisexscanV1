@@ -288,7 +288,7 @@ export const TokenBadge: React.FC<{
       loading="lazy"
       decoding="async"
       onError={()=>setLogoError(true)}
-      className={`shrink-0 select-none rounded-[28%] ${sector==='stocks' ? 'bg-white p-[3px]' : ''} ${className}`}
+      className={`shrink-0 select-none rounded-[28%] motion-safe:transition-transform motion-safe:duration-200 motion-safe:hover:scale-110 ${sector==='stocks' ? 'bg-white p-[3px]' : ''} ${className}`}
       style={{width:size,height:size}}
       referrerPolicy="no-referrer"
     />;
@@ -299,7 +299,7 @@ export const TokenBadge: React.FC<{
       width={size}
       height={size}
       viewBox="0 0 24 24"
-      className={`shrink-0 select-none ${className}`}
+      className={`shrink-0 select-none motion-safe:transition-transform motion-safe:duration-200 motion-safe:hover:scale-110 ${className}`}
       style={{ width: size, height: size }}
       aria-label={clean}
     >
