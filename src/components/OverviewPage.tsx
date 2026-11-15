@@ -621,7 +621,7 @@ export const OverviewPage: React.FC<{
               {dashboardData.unchanged > 0 && <span className="text-slate-400">{dashboardData.unchanged} unchanged</span>}
               <span className="text-slate-600">·</span>
               <span className={connectionState === 'connected' ? 'text-[#22e0a1]' : 'text-[#ffb02e]'}>
-                {connectionState === 'connected' ? 'Live oracle marks' : 'Prices reconnecting'}
+                {connectionState === 'connected' ? 'Oracle WS connected' : 'Oracle WS reconnecting'}
               </span>
               <span className="text-slate-500">· 24h volume/OI via REST snapshots</span>
             </div>
