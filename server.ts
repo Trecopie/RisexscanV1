@@ -1250,7 +1250,11 @@ async function startServer() {
   app.use('/api', (req,res,next) => {
     const start=performance.now();
     res.once('finish', () => {
-      const path = String(req.route?.path || req.path);
+      // Never retain user-controlled wallet names, tx hashes, or addresses.
+      // Express route patterns are set after a matching handler runs; group
+      // unmatched paths into 'unmatched' rather than saving raw URL components.
+      const route = req.route?.path;
+      const path = typeof route === 'string' ? route : 'unmatched';
       if (path === '/monitoring/performance') return;
       const entry=apiPerf.get(path) || {durations:[],requests:0,errors:0};
       entry.requests++;
