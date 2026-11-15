@@ -248,7 +248,16 @@ function renderVectorMark(clean: string, sector: MarketSectorId, theme: AssetThe
 const CRYPTO_ICON_SLUGS: Record<string,string> = {
   BTC:'btc',ETH:'eth',SOL:'sol',BNB:'bnb',XRP:'xrp',ADA:'ada',DOGE:'doge',
   AVAX:'avax',DOT:'dot',LTC:'ltc',LINK:'link',ATOM:'atom',UNI:'uni',
-  AAVE:'aave',ARB:'arb',XLM:'xlm',BCH:'bch',
+  AAVE:'aave',XLM:'xlm',BCH:'bch',XMR:'xmr',ZEC:'zec',
+  FIL:'fil',TRX:'trx',ETC:'etc',EOS:'eos',
+};
+/** The official Simple Icons mark recolored to the issuer's primary brand hue.
+ * Unverified, ambiguous and ETF symbols retain the neutral vector fallback. */
+const BRAND_ICON_COLORS:Record<string,string>={
+  NVDA:'76B900',TSLA:'E31937',AAPL:'000000',MSFT:'5E5E5E',
+  AMZN:'FF9900',META:'0866FF',GOOG:'4285F4',GOOGL:'4285F4',
+  AMD:'ED1C24',NFLX:'E50914',INTC:'0071C5',ORCL:'F80000',
+  CRM:'00A1E0',PYPL:'003087',
 };
 const BRAND_ICON_SLUGS: Record<string,string> = {
   NVDA:'nvidia',TSLA:'tesla',AAPL:'apple',MSFT:'microsoft',AMZN:'amazon',
@@ -261,7 +270,7 @@ export function curatedAssetLogoUrl(symbol:string, sector:MarketSectorId):string
     return `https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/svg/color/${CRYPTO_ICON_SLUGS[clean]}.svg`;
   }
   if (sector === 'stocks' && BRAND_ICON_SLUGS[clean]) {
-    return `https://cdn.jsdelivr.net/npm/simple-icons@v16/icons/${BRAND_ICON_SLUGS[clean]}.svg`;
+    return `https://cdn.simpleicons.org/${BRAND_ICON_SLUGS[clean]}/${BRAND_ICON_COLORS[clean]||'000000'}`;
   }
   return null;
 }
@@ -288,7 +297,7 @@ export const TokenBadge: React.FC<{
       loading="lazy"
       decoding="async"
       onError={()=>setLogoError(true)}
-      className={`shrink-0 select-none rounded-[28%] motion-safe:transition-transform motion-safe:duration-200 motion-safe:hover:scale-110 ${sector==='stocks' ? 'bg-white p-[3px]' : ''} ${className}`}
+      className={`shrink-0 select-none rounded-[28%] motion-safe:transition-transform motion-safe:duration-200 motion-safe:hover:scale-110 ${sector==='stocks' ? 'bg-white p-[3px] ring-1 ring-slate-700/40' : ''} ${className}`}
       style={{width:size,height:size}}
       referrerPolicy="no-referrer"
     />;
