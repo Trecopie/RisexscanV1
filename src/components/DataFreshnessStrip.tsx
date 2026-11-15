@@ -12,6 +12,9 @@ interface Freshness {
   lastObservedTradeAt:number|null;
   tradeEventsDropped:number;
   historicalCoverageComplete:boolean;
+  databaseStorageBytes:number|null;
+  databaseSoftLimitBytes:number|null;
+  databaseTradeWritesPaused:boolean;
 }
 interface LatencyRow { route:string; requests:number; p50Ms:number; p95Ms:number; errorRatePct:number;sampleSize:number }
 interface BrowserPerf {
@@ -133,6 +136,13 @@ export const DataFreshnessStrip:React.FC = () => {
             Historical wallet and trade coverage is incomplete. Live observed trades {snapshot?.tradesWsConnected?'connected':'disconnected'}.
             {snapshot?.tradeEventsDropped ? ` ${snapshot.tradeEventsDropped} events dropped in this process.` : ''}
           </p>
+          {snapshot?.databaseConnected && (
+            <p className={snapshot.databaseTradeWritesPaused?'text-[#ffb02e]':'text-slate-400'}>
+              Free Postgres storage: {snapshot.databaseStorageBytes!==null && snapshot.databaseStorageBytes!==undefined ? (snapshot.databaseStorageBytes/1_000_000).toFixed(0)+' MB' : 'unavailable'}
+              {snapshot.databaseSoftLimitBytes ? ` / ${(snapshot.databaseSoftLimitBytes/1_000_000).toFixed(0)} MB soft limit` : ''}.
+              {snapshot.databaseTradeWritesPaused ? ' Raw trade capture paused to protect free quota; existing records retained.' : ' Raw-fill quota guard active.'}
+            </p>
+          )}
           {browserPerf && (
             <div className="flex flex-wrap gap-x-5 gap-y-1 text-[10px] font-mono text-slate-400">
               <span>Browser TTFB {browserPerf.ttfbMs===null?'—':`${browserPerf.ttfbMs}ms`}</span>
