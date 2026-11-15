@@ -1304,6 +1304,30 @@ async function startServer() {
     res.json({fetchedAt:Date.now(),uptimeSec:Math.round(process.uptime()),metrics});
   });
 
+  // Heavy account diagnostics can request 9+ upstream calls and optional
+  // forced trader resync. Bound them separately from ordinary price APIs;
+  // otherwise an anonymous visitor could exhaust free-provider quotas.
+  const diagnosticBudget=new Map<string,{count:number;resetAt:number}>();
+  const resyncBudget=new Map<string,{count:number;resetAt:number}>();
+  function permitCostlyRequest(budget:Map<string,{count:number;resetAt:number}>,
+      ip:string,limit:number,windowMs:number):{allowed:boolean;retryAfterSec:number}{
+    const now=Date.now();
+    const current=budget.get(ip);
+    if(!current || current.resetAt<=now){
+      if(budget.size>2500){
+        for(const [key,value]of budget)if(value.resetAt<=now)budget.delete(key);
+      }
+      budget.set(ip,{count:1,resetAt:now+windowMs});
+      return {allowed:true,retryAfterSec:0};
+    }
+    if(current.count>=limit)return {
+      allowed:false,
+      retryAfterSec:Math.max(1,Math.ceil((current.resetAt-now)/1000)),
+    };
+    current.count++;
+    return {allowed:true,retryAfterSec:0};
+  }
+
   // Lightweight sliding-window per-IP rate limiter for /api/*
   const ipHits = new Map<string, { count: number; resetAt: number }>();
   setInterval(() => {
@@ -1593,7 +1617,21 @@ async function startServer() {
   app.get('/api/leaderboard/diagnostic/:addressOrUsername', async (req: Request, res: Response) => {
     try {
       const rawParam = String(req.params.addressOrUsername || '').trim();
+      if(rawParam.length>120){
+        res.status(400).json({error:'Trader query is too long'});
+        return;
+      }
       const shouldResync = req.query.resync === '1';
+      const ip=String(req.ip||req.socket.remoteAddress||'unknown');
+      const diagnosticGate=permitCostlyRequest(diagnosticBudget,ip,8,60000);
+      const resyncGate=shouldResync
+        ?permitCostlyRequest(resyncBudget,ip,2,600000)
+        :{allowed:true,retryAfterSec:0};
+      if(!diagnosticGate.allowed || !resyncGate.allowed){
+        res.setHeader('Retry-After',String(Math.max(diagnosticGate.retryAfterSec,resyncGate.retryAfterSec)));
+        res.status(429).json({error:'Trader diagnostic rate limit; try again later.'});
+        return;
+      }
       const resolved = await resolveAddressOrUsername(rawParam);
       if (!resolved) {
         res.status(404).json({ error: `Trader or wallet "${rawParam}" not found` });
