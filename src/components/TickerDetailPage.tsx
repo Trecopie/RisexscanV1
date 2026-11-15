@@ -33,6 +33,7 @@ import { LongShortBiasBar } from './Charts';
 import { TradingViewChart } from './TradingViewChart';
 import { LiquidityDepthHeatmap } from './LiquidityDepthHeatmap';
 import { useMarketStream } from '../context/MarketWebSocketContext';
+import { parseWsMarketMessage } from '../utils/marketWsPatch';
 import { calcLiqDistancePct, LiqDistanceBadge, TokenBadge, TraderAvatar } from './TraderAvatar';
 
 interface TickerAnalyticsResponse {
@@ -175,27 +176,14 @@ export const TickerDetailPage: React.FC<{
         };
         ws.onmessage = (ev) => {
           try {
-            const msg = JSON.parse(ev.data);
-            const payload = msg?.data;
-            if (!payload) return;
-            const items = Array.isArray(payload) ? payload : payload.trades || [payload];
-            const fresh: MarketTrade[] = items
-              .filter(
-                (t: any) =>
-                  t &&
-                  t.price &&
-                  t.size &&
-                  (!t.market_id || String(t.market_id) === String(marketId))
-              )
-              .map((t: any) => ({
-                id: String(t.id || `${Date.now()}-${Math.random()}`),
-                maker_side: String(t.maker_side || t.side || 'buy'),
-                price: String(t.price),
-                size: String(t.size),
-                time: String(t.time || Date.now()),
-                block_number: String(t.block_number || ''),
-                log_index: String(t.log_index || ''),
-              }));
+            // Share the same validated RISEx WS decoder as the market-wide feed.
+            // RISEx sends market ID, block and timestamp in the message envelope,
+            // not necessarily inside its trade data object.
+            const frames = parseWsMarketMessage(JSON.parse(String(ev.data)));
+            const fresh: MarketTrade[] = frames
+              .filter((frame) => frame.kind === 'trade' && frame.marketId === String(marketId))
+              .map((frame) => frame.kind === 'trade' ? frame.trade : null)
+              .filter((trade): trade is MarketTrade => trade !== null);
             if (fresh.length > 0) {
               setTrades((prev) => {
                 const seen = new Set(prev.map((x) => x.id));
