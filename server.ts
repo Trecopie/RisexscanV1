@@ -1355,10 +1355,14 @@ async function startServer() {
     }
   });
 
-  app.get('/api/data/freshness', (_req:Request,res:Response) => {
+  app.get('/api/data/freshness', async (_req:Request,res:Response) => {
     res.setHeader('Cache-Control','no-store');
+    const storage=await historyStore.storageStatus().catch(()=>null);
     res.json({
       fetchedAt:Date.now(),
+      databaseStorageBytes:storage?.usedBytes ?? null,
+      databaseSoftLimitBytes:storage?.limitBytes ?? null,
+      databaseTradeWritesPaused:storage?.writeLimited ?? false,
       marketsRestUpdatedAt:marketsUpdatedAt || null,
       walletIndexCompletedAt:lastIndexComplete || null,
       indexedTraders:tradersMap.size,
@@ -1368,7 +1372,7 @@ async function startServer() {
       lastObservedTradeAt:lastObservedTradeAt || null,
       tradeEventsDropped:droppedTradeEvents,
       historicalCoverageComplete:false,
-      note:'Wallet discovery is progressive; trade/fee history covers only periods collected online.',
+      note:'Wallet discovery is progressive; recorded trade/fee history may have gaps during downtime or when the public REST history window is capped.',
     });
   });
 
