@@ -30,7 +30,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
+          # No npm lockfile exists in this repository (only bun.lock).
+          # Explicit npm caching fails setup-node before sampling can start.
       - name: Check optional free database configuration
         id: config
         shell: bash
