@@ -76,7 +76,8 @@ interface PositionRow {
   liquidationPrice: number;
   leverage: number;
   unrealizedPnl: number;
-  realizedPnl?: number;
+  realizedPnl?: number | null;
+  realizedPnlComplete?: boolean;
   roiPct: number;
   marginBalance: number;
   marginMode: 'Cross' | 'Isolated';
@@ -1767,12 +1768,22 @@ async function startServer() {
       const fundingList: any[] = fundingRes.status === 'fulfilled' ? fundingRes.value : [];
       const marketsList: any[] = marketsListRes.status === 'fulfilled' ? marketsListRes.value : [];
 
-      const { openRealizedByMarket, closedTrades } = reconstructTradeLifecycles(
+      const {
+        openRealizedByMarket,
+        openRealizedCompleteByMarket,
+        closedTrades: reconstructedCycles,
+        unattributedEventCount,
+      } = reconstructTradeLifecycles(
         details?.positions || [],
         allTradesList,
         realizedList,
         marketsList
       );
+      // Only publish aggregated cycles with one or more official settlements
+      // attributed. A cycle whose events have been paginated away is unknown,
+      // not $0 PnL.
+      const closedTrades = reconstructedCycles.filter((cycle) => cycle.officialEventCount > 0);
+      const unverifiedCyclesCount = reconstructedCycles.length - closedTrades.length;
 
       // Summarize metrics across official RISEx realized PnL events (falls back to closedTrades if empty)
       const realizedSummary = summarizeRealizedEvents(
@@ -1810,7 +1821,8 @@ async function startServer() {
             liquidationPrice: safeNum(p.liquidation_price),
             leverage: lev,
             unrealizedPnl: uPnl,
-            realizedPnl: openRealizedByMarket.get(mId) ?? 0,
+            realizedPnl: openRealizedByMarket.get(mId) ?? null,
+            realizedPnlComplete: openRealizedCompleteByMarket.get(mId) ?? false,
             roiPct: marginBal > 0 ? (uPnl / marginBal) * 100 : 0,
             marginBalance: marginBal,
             marginMode: p.margin_mode === 1 ? 'Isolated' : 'Cross',
@@ -1937,6 +1949,9 @@ async function startServer() {
           positions,
           closedTrades,
           tradesCapped: allTradesList.length >= 1600,
+          realizedEventsCapped: realizedList.length >= 10000,
+          unverifiedCyclesCount,
+          unattributedRealizedEvents: unattributedEventCount,
           header,
           statsByPeriod: {
             '7d': stats7dRes.status === 'fulfilled' ? stats7dRes.value?.data : null,
