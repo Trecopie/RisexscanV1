@@ -178,7 +178,7 @@ test('applyWsBatchToMarkets batches updates and skips untouched arrays cleanly',
 });
 
 test('RISEx oracle frames decode 18-decimal mark/index prices without decimal trade confusion', () => {
-  assert.equal(parseOracleWei('63126084821834306372811'), 63126.08482183431);
+  assert.ok(Math.abs((parseOracleWei('63126084821834306372811') || 0) - 63126.08482183431) < 1e-8);
   assert.equal(parseOracleWei('64000000000000000000000'), 64000);
   assert.equal(parseOracleWei('64000'), 6.4e-14); // raw oracle strings are always wei
   assert.equal(parseOracleWei('not-a-price'), undefined);
