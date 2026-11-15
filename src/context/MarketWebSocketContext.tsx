@@ -12,7 +12,7 @@ import {
 
 const RISEX_WS_URL = 'wss://ws.rise.trade/ws';
 const MARKETS_CACHE_KEY = 'risexscan_markets_cache_v1';
-const FLUSH_INTERVAL_MS = 250;
+const FLUSH_INTERVAL_MS = 100;
 
 export type WsConnectionState = 'connecting' | 'connected' | 'reconnecting';
 
@@ -20,6 +20,7 @@ interface MarketWebSocketContextValue {
   markets: MarketWithStats[];
   recentTrades: MarketTrade[];
   connectionState: WsConnectionState;
+  lastOracleAt: number | null;
   loading: boolean;
   error: string | null;
   refreshSnapshot: () => Promise<void>;
@@ -42,6 +43,7 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
   const [markets, setMarkets] = useState<MarketWithStats[]>(() => readCachedMarkets());
   const [recentTrades, setRecentTrades] = useState<MarketTrade[]>([]);
   const [connectionState, setConnectionState] = useState<WsConnectionState>('connecting');
+  const [lastOracleAt, setLastOracleAt] = useState<number | null>(null);
   const [loading, setLoading] = useState<boolean>(() => readCachedMarkets().length === 0);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,8 +71,10 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
     if (batch.length === 0) return;
     frameQueueRef.current = [];
     const now = Date.now();
+    let sawOracle = false;
     for (const frame of batch) {
       if (frame.kind === 'oracle') {
+        sawOracle = true;
         const existing = oracleQuotesRef.current.get(frame.marketId);
         oracleQuotesRef.current.set(frame.marketId, {
           receivedAt: now,
@@ -80,6 +84,7 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
       }
     }
 
+    if (sawOracle) setLastOracleAt(now);
     const { markets: nextMarkets, trades, changed } = applyWsBatchToMarkets(
       marketsRef.current,
       bookCacheRef.current,
@@ -297,11 +302,12 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
       markets,
       recentTrades,
       connectionState,
+      lastOracleAt,
       loading,
       error,
       refreshSnapshot,
     }),
-    [markets, recentTrades, connectionState, loading, error, refreshSnapshot]
+    [markets, recentTrades, connectionState, lastOracleAt, loading, error, refreshSnapshot]
   );
 
   return <MarketWebSocketContext.Provider value={value}>{children}</MarketWebSocketContext.Provider>;
