@@ -22,6 +22,22 @@ try{
   attach(desktop);
   await desktop.goto(url.origin,{waitUntil:'domcontentloaded',timeout:120000});
   await desktop.getByRole('heading',{name:'Historical Market Analytics'}).waitFor({timeout:30000});
+  const marketHistory=await desktop.evaluate(async()=>{
+    const response=await fetch('/api/analytics/history');
+    if(!response.ok)throw Error('Historical API HTTP '+response.status);
+    const data=await response.json();
+    return {
+      days:data.marketCandles?.daily?.length??0,
+      marketIds:data.marketCandles?.distinctMarkets??0,
+      firstDay:data.marketCandles?.firstDay??null,
+      oiPoints:data.defillamaOi?.points?.length??0,
+    };
+  });
+  assert.ok(marketHistory.days>=180,'Historical candle archive should contain real prior dates');
+  assert.ok(marketHistory.marketIds>=50,'Historical candle market count unexpectedly low');
+  assert.ok(marketHistory.firstDay<Date.now()-90*86_400_000,'Missing older RISEx history');
+  console.log('Historical: '+JSON.stringify(marketHistory));
+
   await desktop.screenshot({path:'artifacts/browser/overview-dark.png',fullPage:false});
 
   const light=desktop.getByRole('button',{name:'Switch to light mode'});
@@ -43,7 +59,7 @@ try{
   const tiles=await desktop.locator('.market-heat-tile').count();
   assert.ok(tiles>0&&tiles<=150,'Expected bounded live heatmap');
   await desktop.screenshot({path:'artifacts/browser/markets-heatmap.png',fullPage:false});
-  await desktop.getByRole('button',{name:'Screener',exact:true}).click();
+  await desktop.getByRole('group',{name:'Market display'}).getByRole('button',{name:'Screener',exact:true}).click();
   assert.ok(await desktop.getByRole('table').first().isVisible(),'Screener table restored');
   await desktop.getByRole('button',{name:'Leaderboard',exact:true}).first().click();
   assert.ok(new URL(desktop.url()).searchParams.get('tab')==='leaderboard',
