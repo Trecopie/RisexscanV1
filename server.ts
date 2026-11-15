@@ -13,7 +13,7 @@ import {
   normalizeCalendarAndPeriodMetrics,
   reconstructAccountEquitySeries,
 } from './src/utils/portfolioCurves.ts';
-import { buildCohortsAnalytics } from './src/utils/cohorts.ts';
+import { buildCohortsAnalytics, classifyTraderCohort } from './src/utils/cohorts.ts';
 import { computeProfitabilitySummary } from './src/utils/overviewAnalytics.ts';
 import { extractWalletAddressesFromLogs, selectIndexerQueue } from './src/utils/indexerQueue.ts';
 import { buildTraderSyncDiagnostic } from './src/utils/pnlDiagnostic.ts';
@@ -129,6 +129,7 @@ interface TraderRecord {
 let marketsCache: any[] = [];
 let marketsUpdatedAt = 0;
 let lastMarketHistorySample = 0;
+let lastPositionHistorySample = 0;
 let tradeFeedConnected = false;
 let lastObservedTradeAt = 0;
 let droppedTradeEvents = 0;
@@ -881,6 +882,31 @@ async function runBackgroundIndexer() {
     }
 
     lastIndexComplete = Date.now();
+    if (historyStore.ready && Date.now() - lastPositionHistorySample > 3_600_000) {
+      lastPositionHistorySample = Date.now();
+      const grouped=new Map<string,{
+        marketId:string;cohort:'whale'|'shark'|'dolphin'|'fish'|'shrimp';
+        observedAt:number;longUsd:number;shortUsd:number;positions:number
+      }>();
+      for (const trader of tradersMap.values()) {
+        if (!trader.portfolioEnriched) continue;
+        const cohort=classifyTraderCohort(trader.accountValue,trader.totalNotional);
+        for (const pos of trader.positions) {
+          const key=`${pos.marketId}:${cohort}`;
+          const record=grouped.get(key)||{
+            marketId:pos.marketId,cohort,observedAt:Date.now(),longUsd:0,shortUsd:0,positions:0,
+          };
+          if(pos.side==='LONG') record.longUsd+=pos.notionalUsd;
+          else record.shortUsd+=pos.notionalUsd;
+          record.positions++;
+          grouped.set(key,record);
+        }
+      }
+      await historyStore.recordCohortSnapshots([...grouped.values()]).catch(err=>{
+        lastPositionHistorySample=0;
+        console.error('Position snapshot persistence warning:',err);
+      });
+    }
     saveDiskCache();
   } catch (err) {
     console.error('Indexer cycle warning:', err);
@@ -1277,6 +1303,17 @@ async function startServer() {
       return;
     }
     next();
+  });
+
+  app.get('/api/analytics/position-changes',async(_req:Request,res:Response)=>{
+    try {
+      const result=await cachedCallSWR('analytics:position-changes',60000,120000,
+        ()=>historyStore.getPositionChanges());
+      res.json({...result,indexedTraders:tradersMap.size,
+        note:'Changes are sampled from enriched indexed accounts, not proof of executed buys or sells.'});
+    }catch(err:any){
+      res.status(503).json({error:err?.message||'Position changes unavailable'});
+    }
   });
 
   app.get('/api/analytics/history', async (_req:Request,res:Response) => {
