@@ -2,10 +2,12 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import type { MarketTrade } from '../types/risex';
 import {
   applyWsBatchToMarkets,
+  mergeSnapshotWithRecentOracle,
   parseWsMarketMessage,
   type MarketWithStats,
   type OrderbookCache,
   type ParsedWsMarketFrame,
+  type TimedOracleQuote,
 } from '../utils/marketWsPatch';
 
 const RISEX_WS_URL = 'wss://ws.rise.trade/ws';
@@ -47,6 +49,7 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
   marketsRef.current = markets;
 
   const bookCacheRef = useRef<OrderbookCache>(new Map());
+  const oracleQuotesRef = useRef(new Map<string, TimedOracleQuote>());
   const frameQueueRef = useRef<ParsedWsMarketFrame[]>([]);
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -65,6 +68,17 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
     const batch = frameQueueRef.current;
     if (batch.length === 0) return;
     frameQueueRef.current = [];
+    const now = Date.now();
+    for (const frame of batch) {
+      if (frame.kind === 'oracle') {
+        const existing = oracleQuotesRef.current.get(frame.marketId);
+        oracleQuotesRef.current.set(frame.marketId, {
+          receivedAt: now,
+          markPrice: frame.markPrice ?? existing?.markPrice,
+          indexPrice: frame.indexPrice ?? existing?.indexPrice,
+        });
+      }
+    }
 
     const { markets: nextMarkets, trades, changed } = applyWsBatchToMarkets(
       marketsRef.current,
@@ -133,8 +147,11 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
       if (controller.signal.aborted || disposedRef.current) return;
 
       if (Array.isArray(data?.markets)) {
-        marketsRef.current = data.markets;
-        setMarkets(data.markets);
+        // Preserve an oracle tick received after REST assembled its snapshot.
+        // Expired quotes automatically give way to fresh REST pricing.
+        const merged = mergeSnapshotWithRecentOracle(data.markets, oracleQuotesRef.current);
+        marketsRef.current = merged;
+        setMarkets(merged);
         setError(null);
         try {
           sessionStorage.setItem(MARKETS_CACHE_KEY, JSON.stringify(data.markets));
@@ -170,16 +187,24 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
     }, 60_000);
 
     const onVisible = () => {
-      if (document.visibilityState === 'visible') {
+      if (document.visibilityState === 'hidden') {
+        // No background WebSocket message handling or reconnection churn.
+        wsRef.current?.close();
+      } else {
         void refreshSnapshot();
-        if (!wsRef.current && reconnectTimer === null) connectWs();
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        if (!wsRef.current) connectWs();
       }
     };
     document.addEventListener('visibilitychange', onVisible);
 
     const connectWs = () => {
-      if (disposedRef.current) return;
-      if (document.visibilityState === 'hidden') return;
+      if (disposedRef.current || document.visibilityState === 'hidden') return;
+      if (wsRef.current &&
+          (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) return;
       setConnectionState(attempt === 0 ? 'connecting' : 'reconnecting');
 
       try {
@@ -204,6 +229,7 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
         };
 
         ws.onmessage = (ev) => {
+          if (disposedRef.current || document.visibilityState === 'hidden') return;
           try {
             const parsed = JSON.parse(String(ev.data));
             const frames = parseWsMarketMessage(parsed);
@@ -220,6 +246,7 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
           if (wsRef.current === ws) wsRef.current = null;
           if (disposedRef.current) return;
           setConnectionState('reconnecting');
+          if (document.visibilityState === 'hidden') return;
           const delay = Math.min(30000, 1500 * Math.pow(2, attempt++));
           reconnectTimer = setTimeout(() => {
             reconnectTimer = null;
