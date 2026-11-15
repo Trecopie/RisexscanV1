@@ -115,6 +115,7 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
     subscribedKeyRef.current = key;
 
     const topBookIds = allIds.slice(0, 20);
+    ws.send(JSON.stringify({ method: 'subscribe', params: { channel: 'oracle' } }));
     ws.send(JSON.stringify({ method: 'subscribe', params: { channel: 'trades', market_ids: allIds } }));
     ws.send(JSON.stringify({ method: 'subscribe', params: { channel: 'funding', market_ids: allIds } }));
     ws.send(JSON.stringify({ method: 'subscribe', params: { channel: 'orderbook', market_ids: topBookIds } }));
@@ -161,11 +162,24 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
 
-    // Initial HTTP snapshot bootstrap (no periodic polling interval)
+    // Initial HTTP snapshot bootstrap; WS handles price updates, slower snapshots
+    // reconcile rolling 24h volume, funding, and indexed position counts.
     refreshSnapshot();
+    const reconcileTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshSnapshot();
+    }, 60_000);
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshSnapshot();
+        if (!wsRef.current && reconnectTimer === null) connectWs();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
 
     const connectWs = () => {
       if (disposedRef.current) return;
+      if (document.visibilityState === 'hidden') return;
       setConnectionState(attempt === 0 ? 'connecting' : 'reconnecting');
 
       try {
@@ -232,6 +246,8 @@ export const MarketWebSocketProvider: React.FC<{ children: React.ReactNode }> = 
       disposedRef.current = true;
       snapshotAbortRef.current?.abort();
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      clearInterval(reconcileTimer);
+      document.removeEventListener('visibilitychange', onVisible);
       if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
       try {
