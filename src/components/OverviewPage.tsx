@@ -44,6 +44,7 @@ import {
   type DashboardSectorFilter,
 } from '../utils/overviewAnalytics';
 import type { NavTab } from './Navbar';
+import {formatTraderDisplay} from '../utils/traderDisplay';
 import { MarketMiniChart } from './MarketMiniChart';
 import { useMarketSparklines } from '../hooks/useMarketSparklines';
 import { HistoricalInsights } from './HistoricalInsights';
@@ -541,7 +542,7 @@ export const OverviewPage: React.FC<{
                       onClick={() => onSelectWallet(t.address)}
                       className="rounded-md border border-slate-800 bg-[#0e1526] px-2 py-0.5 text-[11px] font-mono text-slate-300 hover:border-[#ffb02e]/50 hover:text-[#ffb02e]"
                     >
-                      {t.username || shortAddress(t.address, 5, 4)}
+                      {formatTraderDisplay(t.address,t.username).name}
                     </button>
                   ))}
                 </div>
@@ -1407,8 +1408,11 @@ export const OverviewPage: React.FC<{
                           size={24}
                         />
                         <div className="min-w-0">
-                          <div className="truncate font-medium text-[#e8edfb] max-w-[150px]">
-                            {t.username || shortAddress(t.address)}
+                          <div className="truncate font-medium text-[#e8edfb] max-w-[175px]"
+                            title={formatTraderDisplay(t.address,t.username).attribution||undefined}>
+                            {formatTraderDisplay(t.address,t.username).name}
+                            {formatTraderDisplay(t.address,t.username).provisionalVault&&
+                              <span className="ml-1 text-[9px] text-[#ffb02e]">(unverified)</span>}
                           </div>
                           <div className="font-mono text-[10px] text-slate-500">
                             {shortAddress(t.address, 6, 4)}
