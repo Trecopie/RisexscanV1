@@ -1163,7 +1163,7 @@ function startObservedTradeCollector() {
               .filter((value:unknown)=>value !== null && value !== undefined && value !== '');
             const reportedFee=feeFields.length > 0
               ? feeFields.reduce((sum:number,value:unknown)=>sum+safeNum(value),0) : null;
-            const ts=nsToMs(frame.timestamp ?? frame.block_timestamp ?? Date.now());
+            const ts=nsToMs(frame.worker_timestamp ?? frame.timestamp ?? frame.block_timestamp ?? Date.now());
             const timestampMs=ts > 0 ? ts : Date.now();
             if (buffer.length >= 12000) {
               buffer.shift();
