@@ -64,10 +64,27 @@ export interface HistoricalAnalyticsPayload {
 export class HistoryStore {
   private pool: Pool | null = null;
   ready = false;
+  private latestStorageCheck=0;
+  private storageBytes=0;
+  private storageCapBytes=Number(process.env.RISEX_DB_SOFT_LIMIT_BYTES||700_000_000);
+  private storageLimited=false;
   constructor(url = process.env.DATABASE_URL || '') {
     if (url) this.pool = new Pool({connectionString:url,max:5,connectionTimeoutMillis:5000,idleTimeoutMillis:30000});
   }
   get configured(): boolean {return this.pool !== null;}
+
+  /** Reserve free-tier headroom: refuse unbounded raw fills before exhausting
+   * the 1 GB free Neon project allocation. Data is never silently deleted. */
+  async storageStatus(force=false):Promise<{usedBytes:number;limitBytes:number;writeLimited:boolean}>{
+    if(!this.ready || !this.pool)return {usedBytes:0,limitBytes:this.storageCapBytes,writeLimited:false};
+    if(force || Date.now()-this.latestStorageCheck>300_000){
+      const result=await this.pool.query('SELECT pg_database_size(current_database()) AS bytes');
+      this.storageBytes=Number(result.rows[0]?.bytes||0);
+      this.storageLimited=this.storageBytes>=this.storageCapBytes;
+      this.latestStorageCheck=Date.now();
+    }
+    return {usedBytes:this.storageBytes,limitBytes:this.storageCapBytes,writeLimited:this.storageLimited};
+  }
 
   async initialize(): Promise<void> {
     if (!this.pool) return;
@@ -197,6 +214,10 @@ export class HistoryStore {
 
   async recordTrades(trades:ObservedTradeRecord[]):Promise<void>{
     if(!this.ready || !this.pool || !trades.length)return;
+    const storage=await this.storageStatus();
+    if(storage.writeLimited){
+      throw new Error('PostgreSQL soft storage limit reached: raw fill capture paused; existing data preserved');
+    }
     for(let i=0;i<trades.length;i+=300){
       const chunk=JSON.stringify(trades.slice(i,i+300).map((trade)=>({
         market_id:trade.marketId,
