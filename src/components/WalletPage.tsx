@@ -1040,10 +1040,15 @@ export const WalletPage: React.FC<{
               )}
               <div className="rounded-xl border border-slate-800 bg-[#090e1a]/70 px-4 py-3 text-xs text-slate-400">
                 {rzViewMode === 'market'
-                  ? 'Market PnL Summary combines official realized settlement events by market and direction. Includes partial closes on currently open positions; it is NOT one row per completed trade. Daily charts use actual settlement dates.'
+                  ? 'Market PnL Summary combines official realized settlements by market and direction, including partial closes on open positions. It is NOT one row per completed trade; charts use actual settlement dates.'
                   : rzViewMode === 'cycles'
                     ? 'Verified Trades reconstructs full 0→0 position cycles from available fills and credits their matched realized PnL at final close. High-frequency or older fills may be missing; this view is not an all-time total.'
                     : 'Partial Closes shows individual official RISEx realized-PnL events, including trims of still-open positions. Do not add these totals to Market PnL Summary.'}
+                {rzViewMode === 'market' && data.realizedEventsCapped && (
+                  <div className="mt-2 text-[#ffb02e]">
+                    Showing the latest 10,000 available settlement events, not a complete all-time history. The official RISEx account total in the profile header may include older events.
+                  </div>
+                )}
                 {rzViewMode === 'cycles' &&
                   (data.tradesCapped || data.realizedEventsCapped || (data.unverifiedCyclesCount || 0) > 0 || (data.unattributedRealizedEvents || 0) > 0) && (
                     <div className="mt-2 text-[#ffb02e]">
