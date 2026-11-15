@@ -31,6 +31,7 @@ import {
 import { mergeLiveTradeIntoBars, normalizeCandles } from '../utils/indicators';
 import { LongShortBiasBar } from './Charts';
 import { TradingViewChart } from './TradingViewChart';
+import { LiquidityDepthHeatmap } from './LiquidityDepthHeatmap';
 import { calcLiqDistancePct, LiqDistanceBadge, TokenBadge, TraderAvatar } from './TraderAvatar';
 
 interface TickerAnalyticsResponse {
@@ -514,6 +515,13 @@ export const TickerDetailPage: React.FC<{
           )}
         </div>
       </div>
+
+      <LiquidityDepthHeatmap
+        bids={orderbook.bids}
+        asks={orderbook.asks}
+        markPrice={markPrice}
+        baseSymbol={market?.base_asset_symbol}
+      />
 
       {/* Market Positioning Bias */}
       {analytics && (
