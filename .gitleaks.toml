@@ -4,7 +4,7 @@ useDefault = true
 # Exact, independently public RISE chain Auth contract identifier (20-byte
 # EVM address, NOT a private key). Found by Gitleaks's generic-api-key rule
 # in 3 historical commits. Keep exception exact; never suppress rule globally.
-[[allowlists]]
+[allowlist]
 description = "Public RISEx Auth contract address from its public system configuration"
 regexTarget = "line"
 regexes = ['''0x0d919daa3f12ae715744eb648c00066c5dbd66f0''']
