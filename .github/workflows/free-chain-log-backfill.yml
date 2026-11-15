@@ -1,0 +1,44 @@
+name: Free RISE contract event history backfill
+# Runs independently of a sleeping web server; no paid indexer or archive key.
+# Raw chain logs are not decoded trades/PnL or claims of full-history coverage.
+on:
+  schedule:
+    - cron: '17 */3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: risex-free-raw-chain-backfill
+  cancel-in-progress: false
+
+jobs:
+  scan-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check database secret availability
+        id: db
+        shell: bash
+        run: |
+          if [ -n "$DATABASE_URL" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Raw chain backfill skipped; no DATABASE_URL secret."
+          fi
+      - name: Install dependencies
+        if: steps.db.outputs.enabled == 'true'
+        run: npm install --no-audit --no-fund
+      - name: Verify contract creation and checkpoint bounded raw events
+        if: steps.db.outputs.enabled == 'true'
+        run: npx tsx scripts/freeChainLogBackfill.ts
