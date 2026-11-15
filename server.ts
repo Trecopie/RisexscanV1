@@ -19,6 +19,7 @@ import { extractWalletAddressesFromLogs, selectIndexerQueue } from './src/utils/
 import { buildTraderSyncDiagnostic } from './src/utils/pnlDiagnostic.ts';
 import { LIQUIDATION_ALERT_PCT, LIQUIDATION_CANDIDATE_PCT, liquidationDistancePct } from './src/utils/liquidationRisk.ts';
 import { normalizeRpcBlocks } from './src/utils/liveChain.ts';
+import { HistoryStore, type ObservedTradeRecord } from './src/utils/historyStore.ts';
 
 dotenv.config();
 
@@ -129,6 +130,15 @@ let marketsCache: any[] = [];
 let marketsUpdatedAt = 0;
 let systemConfigCache: any = null;
 const tradersMap = new Map<string, TraderRecord>();
+const historyStore = new HistoryStore();
+const changedTraders = new Set<string>();
+
+function putTrader(address: string, row: TraderRecord) {
+  const key = address.toLowerCase();
+  tradersMap.set(key, row);
+  changedTraders.add(key);
+}
+
 const customSearchedWallets = new Set<string>();
 let isIndexing = false;
 let lastIndexComplete = 0;
@@ -262,22 +272,65 @@ function loadDiskCache() {
   }
 }
 
+let persistQueue = Promise.resolve();
 function saveDiskCache() {
+  const metadata = {
+    cacheVersion: 3,
+    lastIndexComplete,
+    authCursor,
+    cmCursor,
+    authBackfillComplete,
+    cmBackfillComplete,
+  };
+  if (historyStore.ready) {
+    const dirtyKeys = [...changedTraders];
+    changedTraders.clear();
+    const records = dirtyKeys.map((key) => tradersMap.get(key)).filter((t):t is TraderRecord=>Boolean(t));
+    persistQueue = persistQueue
+      .then(async () => {
+        await historyStore.upsertTraders(records);
+        await historyStore.saveState(metadata);
+      })
+      .catch((err) => {
+        for (const key of dirtyKeys) changedTraders.add(key);
+        console.error('Persistent index save failed:', err);
+      });
+    return;
+  }
   try {
-    const payload = {
-      cacheVersion: 3,
-      lastIndexComplete,
-      authCursor,
-      cmCursor,
-      authBackfillComplete,
-      cmBackfillComplete,
-      traders: Array.from(tradersMap.values()),
-    };
+    const payload = {...metadata,traders:Array.from(tradersMap.values())};
     const tmpFile = `${CACHE_FILE}.tmp`;
     fs.writeFileSync(tmpFile, JSON.stringify(payload));
     fs.renameSync(tmpFile, CACHE_FILE);
   } catch {
-    // ignore write errors on ephemeral/read-only filesystems
+    // ephemeral local fallback; PostgreSQL is required for durable history.
+  }
+}
+
+async function restoreIndexAtStartup():Promise<void>{
+  await historyStore.initialize();
+  if (!historyStore.ready) {
+    loadDiskCache();
+    return;
+  }
+  try {
+    const state=await historyStore.loadState();
+    if (state) {
+      lastIndexComplete=Number(state.lastIndexComplete||0);
+      authCursor=state.authCursor||null;
+      cmCursor=state.cmCursor||null;
+      authBackfillComplete=Boolean(state.authBackfillComplete);
+      cmBackfillComplete=Boolean(state.cmBackfillComplete);
+    }
+    const count=await historyStore.loadTraders((rows) => {
+      for (const trader of rows) {
+        if (trader?.address) tradersMap.set(trader.address.toLowerCase(),trader as TraderRecord);
+      }
+    });
+    console.log(`Restored ${count} traders from persistent PostgreSQL index`);
+  } catch(err) {
+    console.error('Postgres restore failed; using local fallback:',err);
+    loadDiskCache();
   }
 }
 
@@ -325,11 +378,12 @@ function seedDiscoveredTrader(
       existing.totalPnlAll = meta.realizedPnl;
     }
     if (!existing.sources.includes(meta.source)) existing.sources.push(meta.source);
+    changedTraders.add(key);
     return;
   }
 
   const rPnl = meta.realizedPnl ?? 0;
-  tradersMap.set(key, {
+  putTrader(key, {
     address: address.trim(),
     username: meta.username || null,
     avatarUrl: meta.avatarUrl || null,
@@ -530,7 +584,7 @@ async function enrichWallet(address: string, sourceTag: string): Promise<TraderR
       sources,
     };
 
-    tradersMap.set(key, record);
+    putTrader(key, record);
     return record;
   } catch {
     return null;
@@ -1037,7 +1091,7 @@ async function getRecentMarketTrades() {
 }
 
 async function startServer() {
-  loadDiskCache();
+  await restoreIndexAtStartup();
 
   const app = express();
   app.set('trust proxy', 1);
@@ -1946,7 +2000,7 @@ async function startServer() {
         lastUpdated: Date.now(),
         sources: Array.from(new Set([...(prevCached?.sources || []), 'wallet-view'])),
       };
-      tradersMap.set(syncKey, freshRecord);
+      putTrader(syncKey, freshRecord);
       invalidateLeaderboardAndCohortCaches();
 
       const transfersData =
