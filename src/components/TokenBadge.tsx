@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { cleanBaseSymbol, normalizeMarketSector, type MarketSectorId } from '../utils/overviewAnalytics';
 
 interface AssetTheme {
@@ -242,6 +242,30 @@ function renderVectorMark(clean: string, sector: MarketSectorId, theme: AssetThe
   }
 }
 
+/** Explicit, curated logo sources, not guessed from arbitrary ticker strings.
+ * The original vector remains the always-available fallback for unknown assets,
+ * aliases, CDN failures or assets without a reliable icon. */
+const CRYPTO_ICON_SLUGS: Record<string,string> = {
+  BTC:'btc',ETH:'eth',SOL:'sol',BNB:'bnb',XRP:'xrp',ADA:'ada',DOGE:'doge',
+  AVAX:'avax',DOT:'dot',LTC:'ltc',LINK:'link',ATOM:'atom',UNI:'uni',
+  AAVE:'aave',ARB:'arb',XLM:'xlm',BCH:'bch',
+};
+const BRAND_ICON_SLUGS: Record<string,string> = {
+  NVDA:'nvidia',TSLA:'tesla',AAPL:'apple',MSFT:'microsoft',AMZN:'amazon',
+  META:'meta',GOOG:'google',GOOGL:'google',AMD:'amd',NFLX:'netflix',
+  INTC:'intel',ORCL:'oracle',CRM:'salesforce',PYPL:'paypal',
+};
+export function curatedAssetLogoUrl(symbol:string, sector:MarketSectorId):string|null {
+  const clean = cleanBaseSymbol(symbol);
+  if (sector === 'crypto' && CRYPTO_ICON_SLUGS[clean]) {
+    return `https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/svg/color/${CRYPTO_ICON_SLUGS[clean]}.svg`;
+  }
+  if (sector === 'stocks' && BRAND_ICON_SLUGS[clean]) {
+    return `https://cdn.jsdelivr.net/npm/simple-icons@v16/icons/${BRAND_ICON_SLUGS[clean]}.svg`;
+  }
+  return null;
+}
+
 export const TokenBadge: React.FC<{
   symbol: string;
   size?: number;
@@ -252,6 +276,23 @@ export const TokenBadge: React.FC<{
   const sector = normalizeMarketSector(category, clean);
   const theme = ASSET_THEMES[clean] || SECTOR_DEFAULT_THEMES[sector];
   const radius = sector === 'stocks' || sector === 'index_etf' ? 6 : 12;
+  const [logoError,setLogoError] = useState(false);
+  const logoUrl=curatedAssetLogoUrl(clean,sector);
+  useEffect(()=>setLogoError(false),[logoUrl]);
+  if (logoUrl && !logoError) {
+    return <img
+      src={logoUrl}
+      alt={`${clean} icon`}
+      width={size}
+      height={size}
+      loading="lazy"
+      decoding="async"
+      onError={()=>setLogoError(true)}
+      className={`shrink-0 select-none rounded-[28%] ${sector==='stocks' ? 'bg-white p-[3px]' : ''} ${className}`}
+      style={{width:size,height:size}}
+      referrerPolicy="no-referrer"
+    />;
+  }
 
   return (
     <svg
