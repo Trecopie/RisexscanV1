@@ -1168,6 +1168,32 @@ async function getDefiLlamaRiseData() {
   );
 }
 
+/**
+ * Public DefiLlama OI history is venue-specific daily observations,
+ * NOT interchangeable with TVL. No manual backfill or synthetic points.
+ */
+async function getDefiLlamaRisexOiHistory(){
+  return cachedCallSWR('defillama:risex:historical-oi',1_800_000,3_600_000,async()=>{
+    const data=await fetchJson(
+      'https://api.llama.fi/overview/open-interest?excludeTotalDataChart=false&excludeTotalDataChartBreakdown=false',
+      {},10_000,0);
+    const breakdown=Array.isArray(data?.totalDataChartBreakdown)?data.totalDataChartBreakdown:[];
+    const daily=new Map<number,number>();
+    for(const row of breakdown){
+      if(!Array.isArray(row)||row.length<2)continue;
+      const ts=Number(row[0]);
+      const values=row[1];
+      if(!(ts>0)||!values||typeof values!=='object'||Array.isArray(values))continue;
+      const key=Object.keys(values).find(k=>k.toLowerCase()==='risex');
+      if(!key)continue;
+      const usd=Number(values[key]);
+      if(!Number.isFinite(usd)||usd<0)continue;
+      daily.set(Math.floor(ts*1000/86_400_000)*86_400_000,usd);
+    }
+    return [...daily].sort((a,b)=>a[0]-b[0]).map(([time,value])=>({time,value}));
+  });
+}
+
 async function getRecentMarketTrades() {
   return cachedCallSWR('trades:recent', 4000, 20000, async () => {
     const markets = await getMarkets();
@@ -1433,10 +1459,18 @@ async function startServer() {
 
   app.get('/api/analytics/history', async (_req:Request,res:Response) => {
     try {
-      const payload=await cachedCallSWR('analytics:history',30_000,60_000,
-        () => historyStore.getHistoricalAnalytics());
+      const [payload,marketCandles,defillamaOi]=await Promise.all([
+        cachedCallSWR('analytics:history',30_000,60_000,
+          () => historyStore.getHistoricalAnalytics()),
+        cachedCallSWR('analytics:candles:daily',60_000,300_000,
+          () => historyStore.getCandleDerivedHistory()),
+        getDefiLlamaRisexOiHistory().catch(()=>[] as Array<{time:number;value:number}>),
+      ]);
       res.json({
         ...payload,
+        marketCandles,
+        defillamaOi:{source:'DefiLlama daily RISEx open interest',
+          completeHistory:false,points:defillamaOi},
         liveCollector:{connected:tradeFeedConnected,lastTradeAt:lastObservedTradeAt||null,droppedInMemory:droppedTradeEvents},
       });
     } catch(err:any) {
