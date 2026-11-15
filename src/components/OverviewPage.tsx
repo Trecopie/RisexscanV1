@@ -47,7 +47,6 @@ import type { NavTab } from './Navbar';
 import { MarketMiniChart } from './MarketMiniChart';
 import { useMarketSparklines } from '../hooks/useMarketSparklines';
 import { HistoricalInsights } from './HistoricalInsights';
-import { MarketHeatmap } from './MarketHeatmap';
 import { RisexSymbol } from './RisexSymbol';
 import { TokenBadge, TraderAvatar } from './TraderAvatar';
 import { useMarketStream } from '../context/MarketWebSocketContext';
@@ -1184,8 +1183,6 @@ export const OverviewPage: React.FC<{
           </div>
         </div>
       </section>
-
-      <MarketHeatmap markets={markets} onSelectMarket={onSelectMarket} onAllMarkets={() => onNavigateTab('markets')} />
 
       {/* Persistent Watchlist Strip */}
       <section className="space-y-2.5">
