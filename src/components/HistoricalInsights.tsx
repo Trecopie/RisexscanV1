@@ -11,6 +11,7 @@ interface History {
   liveCollector:{connected:boolean;lastTradeAt:number|null;droppedInMemory:number};
   dailyTrades:Array<{day:number;volumeUsd:number;reportedFeesUsd:number|null;feeEventCount:number;tradeCount:number}>;
   hourlyFees:Array<{time:number;reportedFeesUsd:number;feeEventCount:number}>;
+  hourlyTrades?:Array<{time:number;volumeUsd:number;tradeCount:number}>;
   oiSnapshots:Array<{time:number;openInterestUsd:number;volume24hUsd:number;marketCount:number}>;
   marketCandles?:{
     daily:Array<{time:number;value:number;marketCount:number}>;
@@ -122,21 +123,37 @@ export const HistoricalInsights:React.FC=()=>{
     const oiFromDefiLlama=(history?.defillamaOi?.points??[])
       .filter(p=>Number.isFinite(p.time)&&Number.isFinite(p.value)&&p.value>=0)
       .sort((a,b)=>a.time-b.time);
+    const hourly=(history?.hourlyTrades??[])
+      .filter(p=>Number.isFinite(p.time)&&Number.isFinite(p.volumeUsd)&&p.volumeUsd>=0)
+      .sort((a,b)=>a.time-b.time)
+      .filter(p=>p.time>=Date.now()-86_400_000);
+    const hourlyCumulative:Point[]=[];
+    let hourlyRunning=0;
+    for(const p of hourly){hourlyRunning+=p.volumeUsd;
+      hourlyCumulative.push({time:p.time,value:hourlyRunning});}
+    const hasHourly=period==='24H'&&hourly.length>0;
+    const hourlyOi=(history?.oiSnapshots??[])
+      .map(d=>({time:d.time,value:d.openInterestUsd}))
+      .filter(p=>p.time>=Date.now()-86_400_000);
     let derivedTotal=0;
     const reconstructedCumulative=candleRecords.map(p=>{
       derivedTotal+=p.value;return {time:p.time,value:derivedTotal};
     });
     return {
       hasCandleHistory:candleRecords.length>0,
+      hasHourly,
       hasOiHistory:oiFromDefiLlama.length>0,
-      oi:oiFromDefiLlama.length?oiFromDefiLlama:
+      oi:hasHourly&&hourlyOi.length?hourlyOi:oiFromDefiLlama.length?oiFromDefiLlama:
         (history?.oiSnapshots??[]).map(d=>({time:d.time,value:d.openInterestUsd})),
-      daily:candleRecords.length?candleRecords:daily.map(d=>({time:d.day,value:d.volumeUsd})),
-      dailyTrades:daily.map(d=>({time:d.day,value:d.tradeCount})),
-      cumulativeVolume:candleRecords.length?reconstructedCumulative:cumulativeVolume,
+      daily:hasHourly?hourly.map(d=>({time:d.time,value:d.volumeUsd})):
+        candleRecords.length?candleRecords:daily.map(d=>({time:d.day,value:d.volumeUsd})),
+      dailyTrades:hasHourly?hourly.map(d=>({time:d.time,value:d.tradeCount})):
+        daily.map(d=>({time:d.day,value:d.tradeCount})),
+      cumulativeVolume:hasHourly?hourlyCumulative:
+        candleRecords.length?reconstructedCumulative:cumulativeVolume,
       cumulativeFees
     };
-  },[history]);
+  },[history,period]);
 
   return <section className="sunrise-card space-y-4 rounded-2xl p-4 sm:p-5" aria-label="Historical market analytics">
     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -171,17 +188,17 @@ export const HistoricalInsights:React.FC=()=>{
       {history?.marketCandles?.firstDay?shortTime(history.marketCandles.firstDay,false):'unknown'} through{' '}
       {history?.marketCandles?.lastDay?shortTime(history.marketCandles.lastDay,false):'unknown'}.
       Missing/de-listed markets and unverified volume units are excluded; ALL means all available verified observations, not protocol inception completeness.
-      {period==='24H'?' 24H displays the latest recorded UTC-day observation, not synthetic intraday data.':''}
+      {period==='24H'?' The 24H view switches to actual hourly observed trades and hourly OI snapshots; collection gaps remain possible.':''}
     </p>}
     <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
       <ChartCard title="Open Interest History"
-        source={charts.hasOiHistory?'DefiLlama · Historical RISEx OI':'RISEx · Hourly OI samples (partial)'}
+        source={charts.hasHourly?'RISEx · Hourly OI observations':charts.hasOiHistory?'DefiLlama · Historical RISEx OI':'RISEx · Hourly OI samples (partial)'}
         color="#ffb02e" points={charts.oi} period={period}/>
-      <ChartCard title={charts.hasCandleHistory?'Historical Daily Volume':'Observed Daily Volume'}
-        source={charts.hasCandleHistory?'RISEx · Calibrated 1D OHLCV USD estimate':'RISEx · Recorded trades only'}
+      <ChartCard title={charts.hasHourly?'24H Observed Trade Volume':charts.hasCandleHistory?'Historical Daily Volume':'Observed Daily Volume'}
+        source={charts.hasHourly?'RISEx · Hourly public observed trades (partial)':charts.hasCandleHistory?'RISEx · Calibrated 1D OHLCV USD estimate':'RISEx · Recorded trades only'}
         color="#22e0a1" points={charts.daily} period={period}/>
-      <ChartCard title={charts.hasCandleHistory?'Cumulative Reconstructed Volume':'Cumulative Observed Volume'}
-        source={charts.hasCandleHistory?'RISEx · Available validated candles only; not venue lifetime':'RISEx · Incomplete recorded history'}
+      <ChartCard title={charts.hasHourly?'24H Cumulative Observed Volume':charts.hasCandleHistory?'Cumulative Reconstructed Volume':'Cumulative Observed Volume'}
+        source={charts.hasHourly?'RISEx · Last-24h recorded fills only':charts.hasCandleHistory?'RISEx · Available validated candles only; not venue lifetime':'RISEx · Incomplete recorded history'}
         color="#46a6ff" points={charts.cumulativeVolume} period={period}/>
     </div>
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
