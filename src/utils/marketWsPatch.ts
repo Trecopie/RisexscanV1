@@ -56,19 +56,28 @@ function toFinite(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** Convert integer wei via its decimal digits, not Number(raw)/1e18.
+ * Converting a large raw wei integer to binary float first can turn an exact
+ * $50,000 L2 price into 49999.99999999999, breaking identical-level deletes. */
+function decodeUnsignedWei(raw: unknown): number | null {
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return null;
+  const normalized = raw.replace(/^0+(?=\d)/, '');
+  const whole = normalized.length > 18 ? normalized.slice(0, -18) : '0';
+  const decimal = normalized.slice(-18).padStart(18, '0').replace(/0+$/, '');
+  const result = Number(decimal ? `${whole}.${decimal}` : whole);
+  return Number.isFinite(result) && result >= 0 ? result : null;
+}
+
 /** Oracle prices arrive as unsigned 18-decimal integer strings (not trade decimals). */
 export function parseOracleWei(raw: unknown): number | undefined {
-  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return undefined;
-  const price = Number(raw) / 1e18;
-  return Number.isFinite(price) && price > 0 ? price : undefined;
+  const price = decodeUnsignedWei(raw);
+  return price !== null && price > 0 ? price : undefined;
 }
 
 /** RISEx WebSocket L2 price and quantity fields are *both* 18-decimal wei
  * integers. Do not reuse the decimal-string REST/trades decoding path here. */
 function decodeOrderbookWei(raw: unknown): number | null {
-  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return null;
-  const n = Number(raw) / 1e18;
-  return Number.isFinite(n) && n >= 0 ? n : null;
+  return decodeUnsignedWei(raw);
 }
 
 function parseBookLevels(raw: unknown): { price: number; quantity: number }[] {
